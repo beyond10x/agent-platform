@@ -1,0 +1,21 @@
+[package]
+name = "agent-platform-harness"
+description = "Embedded Harness adapter and Connector-backed tool port for agent-platform."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-platform-connectors.workspace = true
+agent-platform-core.workspace = true
+harness-loop.workspace = true
+harness-wire.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
