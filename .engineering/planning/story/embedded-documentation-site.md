@@ -9,7 +9,7 @@ relations:
 - decomposes: epic:developer-surface
 - serves: vision:O5
 - depends_on: story:generated-openapi-contract
-revision: 1
+revision: 2
 ---
 ## Context
 
@@ -17,4 +17,4 @@ The repository and releases are private, so documentation must follow service ac
 
 ## Acceptance
 
-A curated documentation source explains concepts, API use, authentication and current limitations. Its pinned build consumes the generated OpenAPI asset, produces deterministic static files, and a Rust embedding step packages them into the service binary. `/docs/` serves those immutable assets with correct content types, cache policy, a single-page fallback only where intended, and no runtime Node or writable-filesystem dependency. The docs route is explicitly either authenticated or public-by-operator-policy before implementation; it never exposes private planning records.
+A curated public documentation source explains concepts, API use, authentication and current limitations. A Rust build step consumes that source and the generated OpenAPI asset, produces deterministic static files, and embeds them into the service binary. `/docs/` serves those immutable assets publicly with correct content types, cache policy and a single-page fallback only where intended; `/openapi.json` is the API-reference source. The build and runtime require no Node process, CDN, writable site directory or network access, and the projection excludes private planning records, deployment configuration, tenant data and credentials.

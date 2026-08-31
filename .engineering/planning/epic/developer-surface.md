@@ -8,7 +8,7 @@ summary: Expose one generated API contract and an embedded documentation experie
 relations:
 - decomposes: initiative:generic-agent-platform
 - serves: vision:O5
-revision: 1
+revision: 2
 ---
 ## Context
 
@@ -16,4 +16,4 @@ A private service still needs an operator and integrator surface, but GitHub Pag
 
 ## Outcome
 
-The service generates one deterministic OpenAPI document from its route and DTO model, serves that document, and embeds a curated static documentation build under the same HTTP origin. Building documentation may use a pinned Node toolchain, but running the service has no Node or filesystem-site dependency.
+The service generates one deterministic OpenAPI document from its route and DTO model, serves that document publicly at `/openapi.json`, and embeds a curated public static documentation build under the same HTTP origin at `/docs/`. The entire build and embedding path is Rust; running the service has no external site process, runtime toolchain or mutable filesystem dependency. Neither public surface contains tenant data, configuration, credentials, planning records or private operational detail.
