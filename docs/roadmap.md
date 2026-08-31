@@ -8,7 +8,7 @@ order and does not duplicate lifecycle state.
    and trigger definitions.
 2. **Developer surface.** Generate OpenAPI from the actual route and DTO model, serve it at
    `/openapi.json`, and embed a curated documentation build in the service under `/docs/` without a
-   GitHub Pages deployment or runtime Node dependency.
+   GitHub Pages deployment, Node toolchain or runtime site dependency.
 3. **Durable authority.** PostgreSQL, transactional idempotency, Identity's audience-bound verifier,
    delegated execution authority and append-only run evidence.
 4. **Execution.** Worker leases around the already embedded Harness adapter, live Connector

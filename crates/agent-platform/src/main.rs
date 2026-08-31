@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::error::Error;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,6 +41,12 @@ enum Command {
         #[arg(long)]
         connector_catalog: Option<PathBuf>,
     },
+    /// Write the exact `OpenAPI` document served at `/openapi.json`.
+    Openapi {
+        /// Print only the deterministic SHA-256 digest.
+        #[arg(long)]
+        digest: bool,
+    },
 }
 
 #[tokio::main]
@@ -60,6 +67,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 connector_catalog.as_deref(),
             )
             .await
+        }
+        Command::Openapi { digest } => {
+            if digest {
+                println!("{}", agent_platform_openapi::document_sha256());
+            } else {
+                std::io::stdout().write_all(&agent_platform_openapi::document_bytes())?;
+            }
+            Ok(())
         }
     }
 }

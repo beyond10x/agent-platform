@@ -42,6 +42,10 @@ cargo run --locked -p agent-platform -- serve \
 Exposing the development verifier beyond loopback requires the visibly insecure
 `--allow-insecure-dev-listener` flag. It is not production authentication.
 
+The same process serves the public, binary-embedded documentation at
+`http://127.0.0.1:8090/docs/` and its generated OpenAPI 3.1 contract at
+`http://127.0.0.1:8090/openapi.json`. Neither route exposes tenant data or private planning records.
+
 ## HTTP surface
 
 All `/v1` routes require the bearer token. Request authority is derived before the JSON body is
@@ -58,6 +62,8 @@ materialized.
 | `GET /v1/tasks/{task_id}` | read pinned task state |
 | `GET/POST /v1/triggers` | list or define schedule/webhook task sources |
 | `GET /livez` | unauthenticated process liveness |
+| `GET /openapi.json` | public deterministic OpenAPI 3.1 document |
+| `GET /docs/` | public Rust-built documentation website embedded in the binary |
 
 State is intentionally in memory in this slice and is lost on restart.
 
@@ -70,6 +76,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 protocol artifact validate --strict
+cargo run --locked -p agent-platform -- openapi --digest
 ```
 
 The AEP-governed work record is under `.engineering/planning/`; see `docs/roadmap.md` for the delivery
@@ -77,5 +84,4 @@ sequence.
 
 ## Releases
 
-Versions use bare semantic tags such as `0.1.0`. The first private walking-slice release is described
-in `CHANGELOG.md`.
+Versions use bare semantic tags such as `0.2.0`; private releases are described in `CHANGELOG.md`.

@@ -6,6 +6,7 @@ use std::pin::Pin;
 
 use agent_platform_core::{CapabilityMapping, TenantId};
 use harness_wire::{AccessKind, Approval, Effect, Envelope, Idempotency, Risk, ToolName, ToolSpec};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -53,21 +54,89 @@ pub struct OperationDescription {
     pub description_ref: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledCapability {
     pub operation_ref: String,
     pub connection_ref: String,
     pub description_ref: String,
+    #[schemars(with = "schema::ToolSpec")]
     pub tool: ToolSpec,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledToolset {
     pub connector_contract: String,
     pub digest_sha256: String,
     pub capabilities: Vec<CompiledCapability>,
+}
+
+#[allow(dead_code)]
+mod schema {
+    use schemars::JsonSchema;
+    use serde_json::Value;
+
+    #[derive(JsonSchema)]
+    #[schemars(rename = "HarnessToolSpec")]
+    pub struct ToolSpec {
+        pub name: String,
+        pub description: String,
+        pub input_schema: Value,
+        pub approval: Approval,
+        pub envelope: Envelope,
+    }
+
+    #[derive(JsonSchema)]
+    #[schemars(rename_all = "kebab-case")]
+    pub enum Approval {
+        NotRequired,
+        Required,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct Envelope {
+        pub effects: Vec<Effect>,
+        pub risk: Risk,
+        pub idempotency: Idempotency,
+        pub access: Vec<AccessKind>,
+    }
+
+    #[derive(JsonSchema)]
+    #[schemars(rename_all = "snake_case")]
+    pub enum Effect {
+        Read,
+        Write,
+        Network,
+        Process,
+        Filesystem,
+    }
+
+    #[derive(JsonSchema)]
+    #[schemars(rename_all = "snake_case")]
+    pub enum Risk {
+        Low,
+        Medium,
+        High,
+        Destructive,
+    }
+
+    #[derive(JsonSchema)]
+    #[schemars(rename_all = "snake_case")]
+    pub enum Idempotency {
+        Idempotent,
+        NonIdempotent,
+        Conditional,
+    }
+
+    #[derive(JsonSchema)]
+    #[schemars(rename_all = "snake_case")]
+    pub enum AccessKind {
+        Filesystem,
+        Process,
+        Network,
+        Secret,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

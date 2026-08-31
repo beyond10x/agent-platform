@@ -52,6 +52,10 @@ an embedded, curated build; it is not published through GitHub Pages. Crates are
 11. Anything that runs is Rust. Shell is orchestration only; command-line surfaces use `clap`.
 12. Credentials, customer data, private transcripts and production configuration never enter this
     repository.
+13. The API route catalog is consumed by both Axum and the deterministic OpenAPI projection.
+    Handwritten parallel path or payload inventories are defects.
+14. `/docs/` and `/openapi.json` are public, curated service metadata embedded in the binary. Their
+    Rust-only build never projects planning records, tenant data, credentials or deployment config.
 
 ## AEP planning
 

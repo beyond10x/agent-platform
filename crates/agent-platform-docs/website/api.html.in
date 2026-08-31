@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Agent Platform API reference">
+  <title>API · Agent Platform</title>
+  <link rel="stylesheet" href="/docs/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/docs/"><span class="brand-mark">AP</span> Agent Platform</a>
+    <nav><a href="/docs/">Overview</a><a class="active" href="/docs/api/">API</a><a href="/openapi.json">OpenAPI</a></nav>
+  </header>
+  <main class="reference">
+    <div class="eyebrow">API REFERENCE · VERSION {{VERSION}}</div>
+    <h1>One contract,<br><span>served by the binary.</span></h1>
+    <p class="lede">The table below and <a href="/openapi.json">OpenAPI 3.1 document</a> are generated from the same route catalog consumed by the Axum router.</p>
+    <div class="contract-meta"><span>OpenAPI SHA-256</span><code>{{OPENAPI_SHA256}}</code></div>
+    <div class="table-wrap"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Access</th></tr></thead><tbody>{{ROUTE_ROWS}}</tbody></table></div>
+    <section class="auth-note"><div><div class="section-label">AUTHENTICATION</div><h2>Bearer authority</h2></div><p>Send <code>Authorization: Bearer &lt;token&gt;</code>. The development verifier is loopback-only. Request bodies cannot assert tenant, actor, executor, request id or receive time.</p></section>
+  </main>
+  <footer><span>Agent Platform {{VERSION}}</span><span><a href="/docs/">Overview</a></span></footer>
+</body>
+</html>

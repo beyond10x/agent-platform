@@ -11,8 +11,11 @@ publish.workspace = true
 
 [dependencies]
 agent-platform-app.workspace = true
+agent-platform-api.workspace = true
 agent-platform-auth.workspace = true
 agent-platform-core.workspace = true
+agent-platform-docs.workspace = true
+agent-platform-openapi.workspace = true
 axum.workspace = true
 serde.workspace = true
 uuid.workspace = true

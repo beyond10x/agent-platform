@@ -1,25 +1,32 @@
 #![forbid(unsafe_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use agent_platform_api::{
+    ACTIVATE_PATH, AGENT_PATH, AGENTS_PATH, CAPABILITY_PROFILES_PATH, DOCS_API_PATH,
+    DOCS_INDEX_PATH, DOCS_ROOT_PATH, DOCS_STYLES_PATH, LIVENESS_PATH, OPENAPI_PATH,
+    ProblemDocument, REVISIONS_PATH, TASK_PATH, TASKS_PATH, TRIGGERS_PATH,
+};
 use agent_platform_app::{Application, ApplicationError, TrustedRequestContext};
 use agent_platform_auth::CredentialVerifier;
 use agent_platform_core::{
     ActivateRevision, AgentId, CreateAgent, CreateCapabilityProfile, CreateTrigger, RequestId,
     RevisionSpec, SubmitTask, TaskId,
 };
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Extension, Path, State};
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use uuid::Uuid;
 
 const MAX_HTTP_BODY_BYTES: usize = 512 * 1024;
+static OPENAPI: LazyLock<Bytes> =
+    LazyLock::new(|| Bytes::from(agent_platform_openapi::document_bytes()));
 
 #[derive(Clone)]
 pub struct HttpState {
@@ -35,24 +42,29 @@ impl HttpState {
 
 pub fn router(state: HttpState) -> Router {
     let protected = Router::new()
-        .route("/v1/agents", get(list_agents).post(create_agent))
-        .route("/v1/agents/{agent_id}", get(get_agent))
+        .route(AGENTS_PATH, get(list_agents).post(create_agent))
+        .route(AGENT_PATH, get(get_agent))
+        .route(REVISIONS_PATH, get(list_revisions).post(create_revision))
+        .route(ACTIVATE_PATH, post(activate_revision))
         .route(
-            "/v1/agents/{agent_id}/revisions",
-            get(list_revisions).post(create_revision),
-        )
-        .route("/v1/agents/{agent_id}/activate", post(activate_revision))
-        .route(
-            "/v1/capability-profiles",
+            CAPABILITY_PROFILES_PATH,
             get(list_capability_profiles).post(create_capability_profile),
         )
-        .route("/v1/tasks", get(list_tasks).post(submit_task))
-        .route("/v1/tasks/{task_id}", get(get_task))
-        .route("/v1/triggers", get(list_triggers).post(create_trigger))
+        .route(TASKS_PATH, get(list_tasks).post(submit_task))
+        .route(TASK_PATH, get(get_task))
+        .route(TRIGGERS_PATH, get(list_triggers).post(create_trigger))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
 
     Router::new()
-        .route("/livez", get(liveness))
+        .route(LIVENESS_PATH, get(liveness))
+        .route(OPENAPI_PATH, get(openapi))
+        .route(
+            DOCS_ROOT_PATH,
+            get(|| async { Redirect::permanent(DOCS_INDEX_PATH) }),
+        )
+        .route(DOCS_INDEX_PATH, get(docs_index))
+        .route(DOCS_API_PATH, get(docs_api))
+        .route(DOCS_STYLES_PATH, get(docs_styles))
         .merge(protected)
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
         .with_state(state)
@@ -101,6 +113,70 @@ async fn authenticate(
 
 async fn liveness() -> &'static str {
     "ok\n"
+}
+
+async fn openapi() -> Response {
+    public_response(
+        OPENAPI.clone(),
+        "application/json; charset=utf-8",
+        "no-store",
+        false,
+    )
+}
+
+async fn docs_index() -> Response {
+    embedded_docs("index")
+}
+
+async fn docs_api() -> Response {
+    embedded_docs("api")
+}
+
+async fn docs_styles() -> Response {
+    embedded_docs("styles")
+}
+
+fn embedded_docs(name: &str) -> Response {
+    let Some(asset) = agent_platform_docs::asset(name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    public_response(
+        Bytes::from_static(asset.bytes),
+        asset.content_type,
+        asset.cache_control,
+        asset.content_type.starts_with("text/html"),
+    )
+}
+
+fn public_response(
+    bytes: Bytes,
+    content_type: &'static str,
+    cache_control: &'static str,
+    html: bool,
+) -> Response {
+    let mut response = Response::new(Body::from(bytes));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static(content_type),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static(cache_control),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    if html {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            header::HeaderValue::from_static(
+                "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            ),
+        );
+    }
+    response
 }
 
 async fn create_agent(
@@ -272,19 +348,21 @@ fn application_error(error: &ApplicationError) -> Response {
     problem(status, code, &error.to_string())
 }
 
-#[derive(Debug, Serialize)]
-struct Problem<'a> {
-    code: &'a str,
-    message: &'a str,
-}
-
 fn problem(status: StatusCode, code: &str, message: &str) -> Response {
-    (status, Json(Problem { code, message })).into_response()
+    (
+        status,
+        Json(ProblemDocument {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        }),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_platform_api::{Method as ApiMethod, ROUTES};
     use agent_platform_auth::{
         AGENTS_MANAGE, AGENTS_READ, CAPABILITIES_MANAGE, CAPABILITIES_READ, DevelopmentVerifier,
         TASKS_READ, TASKS_SUBMIT, TRIGGERS_MANAGE, TRIGGERS_READ, VerifiedAuthority,
@@ -340,6 +418,10 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    async fn bytes(response: Response) -> Bytes {
+        response.into_body().collect().await.unwrap().to_bytes()
+    }
+
     #[tokio::test]
     async fn authentication_precedes_json_materialization() {
         let response = service()
@@ -348,6 +430,59 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(json_body(response).await["code"], "unauthenticated");
+    }
+
+    #[tokio::test]
+    async fn route_catalog_and_authenticated_router_cannot_drift_apart() {
+        for route in ROUTES.iter().filter(|route| route.authenticated) {
+            let path = route
+                .path
+                .replace("{agent_id}", "agent-one")
+                .replace("{task_id}", "task-one");
+            let method = match route.method {
+                ApiMethod::Get => Method::GET,
+                ApiMethod::Post => Method::POST,
+            };
+            let response = service()
+                .oneshot(request(method, &path, "not json", None))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{} {} was not registered behind authentication",
+                route.method.as_str(),
+                route.path
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_openapi_and_embedded_docs_are_public_exact_assets() {
+        let openapi = service()
+            .oneshot(request(Method::GET, OPENAPI_PATH, "", None))
+            .await
+            .unwrap();
+        assert_eq!(openapi.status(), StatusCode::OK);
+        assert_eq!(openapi.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(openapi.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(
+            bytes(openapi).await,
+            agent_platform_openapi::document_bytes()
+        );
+
+        let docs = service()
+            .oneshot(request(Method::GET, DOCS_INDEX_PATH, "", None))
+            .await
+            .unwrap();
+        assert_eq!(docs.status(), StatusCode::OK);
+        assert_eq!(
+            docs.headers()[header::CONTENT_SECURITY_POLICY],
+            "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        );
+        let docs = String::from_utf8(bytes(docs).await.to_vec()).unwrap();
+        assert!(docs.contains("Agents with a small,"));
+        assert!(docs.contains(OPENAPI_PATH));
     }
 
     #[tokio::test]

@@ -2,16 +2,19 @@
 resolver = "3"
 members = [
     "crates/agent-platform-core",
+    "crates/agent-platform-api",
     "crates/agent-platform-auth",
     "crates/agent-platform-connectors",
     "crates/agent-platform-harness",
     "crates/agent-platform-app",
+    "crates/agent-platform-openapi",
+    "crates/agent-platform-docs",
     "crates/agent-platform-http",
     "crates/agent-platform",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.97"
 license = "LicenseRef-B10x-Proprietary"
@@ -21,10 +24,13 @@ publish = false
 
 [workspace.dependencies]
 agent-platform-core = { path = "crates/agent-platform-core" }
+agent-platform-api = { path = "crates/agent-platform-api" }
 agent-platform-auth = { path = "crates/agent-platform-auth" }
 agent-platform-connectors = { path = "crates/agent-platform-connectors" }
 agent-platform-harness = { path = "crates/agent-platform-harness" }
 agent-platform-app = { path = "crates/agent-platform-app" }
+agent-platform-openapi = { path = "crates/agent-platform-openapi" }
+agent-platform-docs = { path = "crates/agent-platform-docs" }
 agent-platform-http = { path = "crates/agent-platform-http" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
@@ -38,6 +44,7 @@ hex = "0.4"
 http-body-util = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = "0.8"
 sha2 = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }

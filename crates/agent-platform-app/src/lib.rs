@@ -13,6 +13,7 @@ use agent_platform_core::{
     CreateCapabilityProfile, CreateTrigger, RequestId, RevisionSpec, SubmitTask, Task, TaskId,
     TaskStatus, TenantId, Trigger, TriggerId, ValidationError,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -53,7 +54,7 @@ impl TrustedRequestContext {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityProfile {
     pub id: CapabilityProfileId,

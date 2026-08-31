@@ -1,0 +1,21 @@
+[package]
+name = "agent-platform-docs"
+description = "Rust-built embedded documentation assets for agent-platform."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+agent-platform-api.workspace = true
+agent-platform-openapi.workspace = true
+
+[dev-dependencies]
+agent-platform-api.workspace = true
+agent-platform-openapi.workspace = true
+
+[lints]
+workspace = true

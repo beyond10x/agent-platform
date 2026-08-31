@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Agent Platform service documentation">
+  <title>Agent Platform</title>
+  <link rel="stylesheet" href="/docs/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/docs/"><span class="brand-mark">AP</span> Agent Platform</a>
+    <nav><a class="active" href="/docs/">Overview</a><a href="/docs/api/">API</a><a href="/openapi.json">OpenAPI</a></nav>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="eyebrow">PRIVATE SERVICE · VERSION {{VERSION}}</div>
+      <h1>Agents with a small,<br><span>governed reach.</span></h1>
+      <p>Manage immutable agent revisions, project granular Connector operations into focused Harness tools, and admit attributable work through one tenant-scoped API.</p>
+      <div class="actions"><a class="primary" href="/docs/api/">Explore the API</a><a class="secondary" href="/openapi.json">Download OpenAPI</a></div>
+    </section>
+
+    <section class="principles">
+      <article><span>01</span><h2>Immutable by default</h2><p>An agent revision never changes beneath queued work. Activation is an explicit compare-and-swap decision.</p></article>
+      <article><span>02</span><h2>Capabilities, not vendor APIs</h2><p>Mappings narrow described Connector operations into the small tool vocabulary an agent actually needs.</p></article>
+      <article><span>03</span><h2>Authority stays attributable</h2><p>Tenant, actor, executor, request identity, revision and capability profile are derived or pinned at admission.</p></article>
+    </section>
+
+    <section class="status-grid">
+      <div><div class="section-label">AVAILABLE IN {{VERSION}}</div><h2>The management walking slice</h2><ul><li>Agents and immutable revisions</li><li>Connector capability projection</li><li>Idempotent Task admission</li><li>Schedule and webhook definitions</li><li>Embedded Harness adapter</li></ul></div>
+      <div class="callout"><div class="section-label">CURRENT BOUNDARY</div><h2>Accepted is not executed</h2><p>State is in memory and Tasks stop at <code>accepted</code>. Durable PostgreSQL state, production Identity, live Connector invocation, worker leases and trigger delivery are subsequent waves.</p></div>
+    </section>
+
+    <section class="quickstart">
+      <div class="section-label">LOCAL PREVIEW</div>
+      <h2>Run the service</h2>
+      <pre><code>export AGENT_PLATFORM_DEV_BEARER_TOKEN='replace-this-loopback-token'
+cargo run --locked -p agent-platform -- serve \
+  --connector-catalog examples/synthetic-connector-catalog.json</code></pre>
+      <p>The development verifier binds loopback by default. API routes require the bearer token; this documentation and the OpenAPI document are public service metadata.</p>
+    </section>
+  </main>
+  <footer><span>Agent Platform {{VERSION}}</span><span>OpenAPI SHA-256 <code>{{OPENAPI_SHA256}}</code></span></footer>
+</body>
+</html>
