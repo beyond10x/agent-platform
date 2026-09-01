@@ -23,7 +23,7 @@ are separate AEP stories.
 
 ## Run the development service
 
-```console
+```bash
 export AGENT_PLATFORM_DEV_BEARER_TOKEN='replace-this-loopback-token'
 cargo run --locked -p agent-platform -- serve
 ```
@@ -35,7 +35,7 @@ creation in the walking slice.
 
 For a synthetic local projection:
 
-```console
+```bash
 cargo run --locked -p agent-platform -- serve \
   --connector-catalog examples/synthetic-connector-catalog.json
 ```
@@ -75,7 +75,7 @@ Harness only at the provider request boundary.
 
 Rust 1.97 or newer and the `protocol` CLI are required.
 
-```console
+```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
