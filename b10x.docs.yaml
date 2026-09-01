@@ -1,0 +1,19 @@
+schema: b10x-docs/v1
+repository:
+  id: agent-platform
+  url: https://github.com/beyond10x/agent-platform
+surfaces:
+  - id: embedded
+    name: Agent Platform service documentation
+    summary: Embedded local documentation for the private agent-management service and its generated OpenAPI contract.
+    kind: service-docs
+    canonicalUrl: http://127.0.0.1:8090/docs/
+    maturity: development
+    availability: local-only
+    discoverability: internal
+    audiences: [developer, operator]
+    journeys: [build-agents, operate-services]
+    capabilities: [agent-management, capability-projection, task-admission]
+    sections: []
+    accent: "#b7e36b"
+    shell: {integration: portable, revision: 6323bfdaf73609247e8dabcc9df410ab280a1960}
