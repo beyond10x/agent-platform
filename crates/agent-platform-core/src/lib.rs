@@ -176,6 +176,75 @@ pub enum CapabilityPosture {
     Deny,
 }
 
+/// Connector-reported effect classification captured under the caller's current authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorEffectClass {
+    ReadOnly,
+    Mutating,
+    Destructive,
+}
+
+/// Connector-reported minimum approval posture for an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorApprovalPosture {
+    NotRequired,
+    Required,
+}
+
+/// One credential-free callable connection from a Connector operation description.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorConnectionSummary {
+    pub connection_ref: String,
+    pub label: String,
+    pub provider: String,
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+}
+
+/// Credential-free Connector descriptions used to compile one immutable profile revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorOperationDescription {
+    pub operation_ref: String,
+    pub title: String,
+    pub description: String,
+    pub input_schema: Value,
+    pub output_schema: Value,
+    pub effect: ConnectorEffectClass,
+    pub approval: ConnectorApprovalPosture,
+    pub connections: Vec<ConnectorConnectionSummary>,
+    pub description_ref: String,
+}
+
+impl ConnectorOperationDescription {
+    fn validate(&self) -> Result<(), ValidationError> {
+        validate_identifier("operation ref", &self.operation_ref)?;
+        validate_text("operation title", &self.title, 512)?;
+        validate_text("operation description", &self.description, 16 * 1024)?;
+        validate_identifier("description ref", &self.description_ref)?;
+        if !self.input_schema.is_object() || !self.output_schema.is_object() {
+            return Err(ValidationError::InvalidWebhookSchema);
+        }
+        if self.connections.is_empty() || self.connections.len() > 64 {
+            return Err(ValidationError::InvalidText {
+                field: "operation connections",
+                maximum: 64,
+            });
+        }
+        for connection in &self.connections {
+            validate_identifier("connection ref", &connection.connection_ref)?;
+            validate_text("connection label", &connection.label, 512)?;
+            validate_identifier("connection provider", &connection.provider)?;
+        }
+        Ok(())
+    }
+}
+
 impl CapabilityMapping {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_identifier("operation ref", &self.operation_ref)?;
@@ -195,6 +264,9 @@ impl CapabilityMapping {
 pub struct CreateCapabilityProfile {
     pub name: String,
     pub mappings: Vec<CapabilityMapping>,
+    /// Exact credential-free Connector descriptions observed for this profile revision.
+    #[serde(default)]
+    pub operation_descriptions: Vec<ConnectorOperationDescription>,
 }
 
 /// Compare-and-swap replacement for one immutable capability-profile revision.
@@ -204,6 +276,9 @@ pub struct UpdateCapabilityProfile {
     pub expected_revision: u64,
     pub name: String,
     pub mappings: Vec<CapabilityMapping>,
+    /// Exact credential-free Connector descriptions observed for this profile revision.
+    #[serde(default)]
+    pub operation_descriptions: Vec<ConnectorOperationDescription>,
 }
 
 impl CreateCapabilityProfile {
@@ -217,7 +292,10 @@ impl CreateCapabilityProfile {
         }
         self.mappings
             .iter()
-            .try_for_each(CapabilityMapping::validate)
+            .try_for_each(CapabilityMapping::validate)?;
+        self.operation_descriptions
+            .iter()
+            .try_for_each(ConnectorOperationDescription::validate)
     }
 }
 
@@ -226,6 +304,7 @@ impl UpdateCapabilityProfile {
         CreateCapabilityProfile {
             name: self.name.clone(),
             mappings: self.mappings.clone(),
+            operation_descriptions: self.operation_descriptions.clone(),
         }
         .validate()
     }

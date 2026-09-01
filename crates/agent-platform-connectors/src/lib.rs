@@ -5,54 +5,16 @@ use std::future::Future;
 use std::pin::Pin;
 
 use agent_platform_core::{CapabilityMapping, CapabilityPosture, TenantId};
+pub use agent_platform_core::{
+    ConnectorApprovalPosture as ApprovalPosture, ConnectorConnectionSummary as ConnectionSummary,
+    ConnectorEffectClass as EffectClass, ConnectorOperationDescription as OperationDescription,
+};
 use harness_wire::{AccessKind, Approval, Effect, Envelope, Idempotency, Risk, ToolName, ToolSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const CONNECTOR_OPERATION_CONTRACT: &str = "b10x.connector-operation.v0alpha1";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectClass {
-    ReadOnly,
-    Mutating,
-    Destructive,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalPosture {
-    NotRequired,
-    Required,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConnectionSummary {
-    pub connection_ref: String,
-    pub label: String,
-    pub provider: String,
-    #[serde(default)]
-    pub audiences: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OperationDescription {
-    pub operation_ref: String,
-    pub title: String,
-    pub description: String,
-    pub input_schema: Value,
-    pub output_schema: Value,
-    pub effect: EffectClass,
-    pub approval: ApprovalPosture,
-    pub connections: Vec<ConnectionSummary>,
-    pub description_ref: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
