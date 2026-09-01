@@ -1,19 +1,33 @@
-schema: b10x-docs/v1
+schema: b10x-docs/v2
 repository:
   id: agent-platform
   url: https://github.com/beyond10x/agent-platform
 surfaces:
-  - id: embedded
-    name: Agent Platform service documentation
-    summary: Embedded local documentation for the private agent-management service and its generated OpenAPI contract.
+  - id: docs
+    name: Agent Platform
+    summary: Public source, local service documentation, and generated API contracts for managing agents, revisions, capabilities, tasks, runs, and triggers.
     kind: service-docs
-    canonicalUrl: http://127.0.0.1:8090/docs/
+    canonicalUrl: https://github.com/beyond10x/agent-platform#readme
     maturity: development
-    availability: local-only
-    discoverability: internal
-    audiences: [developer, operator]
+    availability: published
+    discoverability: public
+    audiences: [adopter, developer, operator]
     journeys: [build-agents, operate-services]
     capabilities: [agent-management, capability-projection, task-admission]
-    sections: []
+    sections:
+      - {label: Run the service, url: https://github.com/beyond10x/agent-platform#run-the-development-service, kind: quickstart}
+      - {label: HTTP surface, url: https://github.com/beyond10x/agent-platform#http-surface, kind: api}
+      - {label: Source, url: https://github.com/beyond10x/agent-platform, kind: source}
+    relationships:
+      - {target: harness/docs, kind: uses, label: Runs agent model and tool loops through Harness}
+      - {target: connectors/docs, kind: uses, label: Projects governed Connector operations}
+      - {target: identity/docs, kind: uses, label: Resolves tenant and principal authority}
+    adoption:
+      label: Run the development service
+      url: https://github.com/beyond10x/agent-platform#run-the-development-service
+      mode: source-build
+      estimatedMinutes: 10
+      prerequisites: [Rust toolchain]
+      outcome: Run the local authenticated service and inspect its embedded docs and OpenAPI contract.
     accent: "#b7e36b"
-    shell: {integration: portable, revision: 0cbd1f1b6951fec95767332e3a1792f838feb62d}
+    shell: {integration: portable, revision: 73aefe1ca268cc853ed38fb23478454496462a03}

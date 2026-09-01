@@ -24,8 +24,9 @@ voice, A2A channels, manager specialists, console, quotas and SDK facade do not 
 
 ## Visibility
 
-This repository and its release artifacts are private. Documentation is served by the service from
-an embedded, curated build; it is not published through GitHub Pages. Crates are not published.
+This repository is public. Documentation is available from the repository and is also served by the
+service from an embedded, curated build; it is not published through GitHub Pages. Crates are not
+published to a registry.
 
 ## Invariants
 

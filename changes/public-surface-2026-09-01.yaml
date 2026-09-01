@@ -1,0 +1,15 @@
+schema: b10x-change/v1
+id: agent-platform/public-surface-2026-09-01
+repository: agent-platform
+publishedAt: 2026-09-01T12:00:00Z
+title: Agent Platform joins the public ecosystem surface
+summary: Agent Platform is now public and advertises its source, local service documentation, generated OpenAPI contract, dependencies, and first-run path through the shared b10x docs contract.
+kind: capability
+impact: significant
+source:
+  url: https://github.com/beyond10x/agent-platform
+journeys: [build-agents, operate-services]
+affectedSurfaces: [agent-platform/docs]
+relations:
+  - {target: surface:harness/docs, kind: integrates-with, label: Uses Harness for model and tool execution}
+  - {target: surface:connectors/docs, kind: depends-on, label: Uses governed Connector operations}

@@ -4,7 +4,8 @@
 It owns stable agents, immutable revisions, agent-specific capability mappings, asynchronous tasks,
 run evidence and triggers while composing the existing foundation:
 
-This repository and its release artifacts are private.
+The source and GitHub releases are public. The crates remain deployment components rather than
+registry-published packages.
 
 - [Harness](https://github.com/beyond10x/harness) owns the model/tool loop.
 - [Connectors](https://github.com/beyond10x/connectors) owns external operations, credentials,
@@ -87,4 +88,4 @@ sequence.
 
 ## Releases
 
-Versions use bare semantic tags such as `0.2.0`; private releases are described in `CHANGELOG.md`.
+Versions use bare semantic tags such as `0.2.0`; releases are described in `CHANGELOG.md`.
