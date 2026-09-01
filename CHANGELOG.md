@@ -4,6 +4,11 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-09-01
+
+- Added the pinned, non-root OCI build used for private Kubernetes deployments. Private source
+  access is supplied only as a BuildKit secret during compilation.
+
 ## [0.3.0] — 2026-09-01
 
 - Added production Identity session verification and exact audience/scope exchange through the

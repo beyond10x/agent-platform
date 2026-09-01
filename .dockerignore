@@ -1,0 +1,7 @@
+.git
+.github
+.engineering
+target
+docs
+examples
+*.md
