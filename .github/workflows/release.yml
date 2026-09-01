@@ -95,10 +95,13 @@ jobs:
           case "$digest" in sha256:*) ;; *) exit 1 ;; esac
           cosign sign --yes "ghcr.io/beyond10x/agent-platform-runtime@${digest}"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-      - name: Require private package visibility
+      - name: Enforce private package visibility
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh api --method PATCH \
+            /orgs/beyond10x/packages/container/agent-platform-runtime \
+            -f visibility=private
           test "$(gh api /orgs/beyond10x/packages/container/agent-platform-runtime --jq .visibility)" = private
 
   release:
