@@ -4,6 +4,12 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-02
+
+- Capability-profile creation and compare-and-swap updates can compile an exact credential-free
+  Connector operation snapshot observed under the caller's current grants, so user-specific
+  connection identities no longer depend on a process-static deployment catalogue.
+
 ## [0.4.2] — 2026-09-02
 
 - Bound the runtime image to a repository-owned package identity so release jobs do not depend on

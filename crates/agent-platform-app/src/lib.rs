@@ -9,7 +9,9 @@ use agent_platform_auth::{
     AGENTS_MANAGE, AGENTS_READ, CAPABILITIES_MANAGE, CAPABILITIES_READ, TASKS_READ, TASKS_SUBMIT,
     TRIGGERS_MANAGE, TRIGGERS_READ, VerifiedAuthority,
 };
-use agent_platform_connectors::{CompiledToolset, ConnectorCatalog, ProjectionError, compile};
+use agent_platform_connectors::{
+    CompiledToolset, ConnectorCatalog, InMemoryCatalog, ProjectionError, compile,
+};
 use agent_platform_core::{
     ActivateRevision, Agent, AgentId, AgentRevision, AttemptId, CapabilityProfileId, CreateAgent,
     CreateCapabilityProfile, CreateTrigger, RequestId, RevisionSpec, SubmitTask, Task, TaskEvent,
@@ -341,12 +343,13 @@ impl Application {
     ) -> Result<CapabilityProfile, ApplicationError> {
         context.require(CAPABILITIES_MANAGE)?;
         request.validate()?;
-        let compiled = compile(
-            self.catalog.as_ref(),
-            context.authority.tenant_id(),
-            &request.mappings,
-        )
-        .await?;
+        let request_catalog = InMemoryCatalog::new(request.operation_descriptions.clone());
+        let catalog: &dyn ConnectorCatalog = if request.operation_descriptions.is_empty() {
+            self.catalog.as_ref()
+        } else {
+            &request_catalog
+        };
+        let compiled = compile(catalog, context.authority.tenant_id(), &request.mappings).await?;
         let profile = CapabilityProfile {
             id: new_profile_id()?,
             tenant_id: context.authority.tenant_id().clone(),
@@ -377,12 +380,13 @@ impl Application {
     ) -> Result<CapabilityProfile, ApplicationError> {
         context.require(CAPABILITIES_MANAGE)?;
         request.validate()?;
-        let compiled = compile(
-            self.catalog.as_ref(),
-            context.authority.tenant_id(),
-            &request.mappings,
-        )
-        .await?;
+        let request_catalog = InMemoryCatalog::new(request.operation_descriptions.clone());
+        let catalog: &dyn ConnectorCatalog = if request.operation_descriptions.is_empty() {
+            self.catalog.as_ref()
+        } else {
+            &request_catalog
+        };
+        let compiled = compile(catalog, context.authority.tenant_id(), &request.mappings).await?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
         let profile = tenant
@@ -957,8 +961,7 @@ mod tests {
         TASKS_SUBMIT, TRIGGERS_MANAGE, TRIGGERS_READ,
     };
     use agent_platform_connectors::{
-        ApprovalPosture, ConnectionSummary, EffectClass, EmptyCatalog, InMemoryCatalog,
-        OperationDescription,
+        ApprovalPosture, ConnectionSummary, EffectClass, EmptyCatalog, OperationDescription,
     };
     use agent_platform_core::{CapabilityMapping, CapabilityPosture, SubjectId, TenantId};
 
@@ -1201,7 +1204,7 @@ mod tests {
 
     #[tokio::test]
     async fn capability_profile_updates_are_compare_and_swap_and_change_posture() {
-        let catalog = Arc::new(InMemoryCatalog::new([OperationDescription {
+        let description = OperationDescription {
             operation_ref: "repository.read".to_owned(),
             title: "Read repository".to_owned(),
             description: "Read one repository file.".to_owned(),
@@ -1217,8 +1220,8 @@ mod tests {
                 purpose: None,
             }],
             description_ref: "description-project-read".to_owned(),
-        }]));
-        let app = Application::new(catalog);
+        };
+        let app = Application::new(Arc::new(EmptyCatalog));
         let context = context("tenant-one", 10);
         let mapping = |posture| CapabilityMapping {
             operation_ref: "repository.read".to_owned(),
@@ -1233,6 +1236,7 @@ mod tests {
                 CreateCapabilityProfile {
                     name: "Project".to_owned(),
                     mappings: vec![mapping(CapabilityPosture::Allow)],
+                    operation_descriptions: vec![description.clone()],
                 },
             )
             .await
@@ -1248,6 +1252,7 @@ mod tests {
                     expected_revision: 1,
                     name: "Project".to_owned(),
                     mappings: vec![mapping(CapabilityPosture::Deny)],
+                    operation_descriptions: vec![description.clone()],
                 },
             )
             .await
@@ -1262,6 +1267,7 @@ mod tests {
                     expected_revision: 1,
                     name: "Stale".to_owned(),
                     mappings: vec![mapping(CapabilityPosture::Allow)],
+                    operation_descriptions: vec![description],
                 },
             )
             .await,
