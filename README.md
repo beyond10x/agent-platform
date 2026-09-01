@@ -89,3 +89,9 @@ sequence.
 ## Releases
 
 Versions use bare semantic tags such as `0.2.0`; releases are described in `CHANGELOG.md`.
+
+<!-- b10x-docs:start -->
+## Documentation
+
+[Agent Platform documentation](https://beyond10x.github.io/docs/agent-platform/) · [Start](https://beyond10x.github.io/) · [Ecosystem](https://beyond10x.github.io/ecosystem/) · [Impact](https://beyond10x.github.io/changes/) · [Releases](https://beyond10x.github.io/releases/)
+<!-- b10x-docs:end -->
