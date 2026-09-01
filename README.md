@@ -14,12 +14,13 @@ registry-published packages.
   its official private client; a loopback-only development verifier remains available for local use.
 - Substrate owns confined execution and llmgw will own production model routing.
 
-The current walking slice implements authenticated in-memory management of agents and revisions,
+The current walking slice implements authenticated durable management of agents and revisions,
 deterministic Connector-operation to Harness-tool projection, idempotent task intake, and schedule or
 webhook trigger definitions. Its Harness adapter embeds Harness 0.10.0. User-bound Tasks run through
-an attempt-scoped Connector lease and stream ordered execution evidence over SSE. It does not claim
-durable worker recovery, live Connector operation invocation, approvals or trigger delivery; those
-are separate AEP stories.
+an attempt-scoped Connector lease and stream ordered execution evidence over SSE. When `--state-path`
+is configured, accepted state is atomically snapshotted and recovered after a restart; interrupted
+attempts are closed with an explicit `execution_interrupted` result. It does not claim live Connector
+operation invocation, approvals or trigger delivery; those are separate AEP stories.
 
 ## Run the development service
 
@@ -37,6 +38,7 @@ For a synthetic local projection:
 
 ```bash
 cargo run --locked -p agent-platform -- serve \
+  --state-path .local/agent-platform-state.json \
   --connector-catalog examples/synthetic-connector-catalog.json
 ```
 
@@ -59,6 +61,7 @@ materialized.
 | `GET/POST /v1/agents/{agent_id}/revisions` | list or append immutable revisions |
 | `POST /v1/agents/{agent_id}/activate` | compare-and-swap the active revision |
 | `GET/POST /v1/capability-profiles` | list or compile Connector mappings into Harness tools |
+| `PATCH /v1/capability-profiles/{profile_id}` | compare-and-swap capability posture changes |
 | `GET/POST /v1/tasks` | list or idempotently admit asynchronous work |
 | `GET /v1/tasks/{task_id}` | read pinned task state |
 | `GET /v1/tasks/{task_id}/events` | stream ordered events for the admitted attempt as SSE |
@@ -67,7 +70,9 @@ materialized.
 | `GET /openapi.json` | public deterministic OpenAPI 3.1 document |
 | `GET /docs/` | public Rust-built documentation website embedded in the binary |
 
-State and task execution are intentionally process-local in this slice and are lost on restart.
+State remains process-local unless `--state-path` is configured. With it, agents, revisions,
+capability profiles, tasks, evidence and triggers survive restarts; work that was in flight is
+terminated explicitly rather than silently resumed.
 Production Identity and Connector custody are external services; model credentials are redeemed by
 Harness only at the provider request boundary.
 

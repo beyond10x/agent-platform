@@ -6,14 +6,14 @@ use agent_platform_api::{Operation, ProblemDocument, ROUTES, RouteSpec};
 use agent_platform_app::CapabilityProfile;
 use agent_platform_core::{
     ActivateRevision, Agent, AgentRevision, CreateAgent, CreateCapabilityProfile, CreateTrigger,
-    RevisionSpec, SubmitTask, Task, TaskEvent, Trigger,
+    RevisionSpec, SubmitTask, Task, TaskEvent, Trigger, UpdateCapabilityProfile,
 };
 use schemars::JsonSchema;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const EXPECTED_OPENAPI_SHA256: &str =
-    "abb13571809dad873840e8439eee169914ab8ece5d45af3d32d8ffc35f2f9882";
+    "f4d159f3931ce3d77c0f2f86e33be2e7bc3a81423b59d009bb46a0750fb30d99";
 
 /// Builds the complete `OpenAPI` document as a deterministic JSON value.
 ///
@@ -33,6 +33,7 @@ pub fn document() -> Value {
     register::<Vec<AgentRevision>>("AgentRevisionList", &mut schemas);
     register::<ActivateRevision>("ActivateRevision", &mut schemas);
     register::<CreateCapabilityProfile>("CreateCapabilityProfile", &mut schemas);
+    register::<UpdateCapabilityProfile>("UpdateCapabilityProfile", &mut schemas);
     register::<CapabilityProfile>("CapabilityProfile", &mut schemas);
     register::<Vec<CapabilityProfile>>("CapabilityProfileList", &mut schemas);
     register::<SubmitTask>("SubmitTask", &mut schemas);
@@ -58,7 +59,7 @@ pub fn document() -> Value {
         "info": {
             "title": "Agent Platform API",
             "version": env!("CARGO_PKG_VERSION"),
-            "description": "Authenticated, tenant-scoped management of agents, immutable revisions, projected capabilities, tasks, streamed execution evidence and triggers. User-bound execution is process-local; durable worker recovery remains a separate milestone."
+            "description": "Authenticated, tenant-scoped management of durable agents, immutable revisions, projected capabilities, tasks, streamed execution evidence and triggers."
         },
         "servers": [{ "url": "/" }],
         "paths": paths,
@@ -150,6 +151,7 @@ const fn request_schema(operation: Operation) -> Option<&'static str> {
         Operation::CreateRevision => Some("RevisionSpec"),
         Operation::ActivateRevision => Some("ActivateRevision"),
         Operation::CreateCapabilityProfile => Some("CreateCapabilityProfile"),
+        Operation::UpdateCapabilityProfile => Some("UpdateCapabilityProfile"),
         Operation::SubmitTask => Some("SubmitTask"),
         Operation::CreateTrigger => Some("CreateTrigger"),
         Operation::Liveness
@@ -171,7 +173,9 @@ const fn response_schema(operation: Operation) -> &'static str {
         Operation::ListRevisions => "AgentRevisionList",
         Operation::CreateRevision => "AgentRevision",
         Operation::ListCapabilityProfiles => "CapabilityProfileList",
-        Operation::CreateCapabilityProfile => "CapabilityProfile",
+        Operation::CreateCapabilityProfile | Operation::UpdateCapabilityProfile => {
+            "CapabilityProfile"
+        }
         Operation::ListTasks => "TaskList",
         Operation::SubmitTask | Operation::GetTask => "Task",
         Operation::StreamTaskEvents => "TaskEvent",
@@ -182,7 +186,7 @@ const fn response_schema(operation: Operation) -> &'static str {
 }
 
 fn path_parameters(path: &str) -> Vec<Value> {
-    ["agent_id", "task_id"]
+    ["agent_id", "profile_id", "task_id"]
         .into_iter()
         .filter(|name| path.contains(&format!("{{{name}}}")))
         .map(|name| {

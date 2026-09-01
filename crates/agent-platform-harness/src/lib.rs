@@ -10,7 +10,7 @@ use harness_loop::{AgentLoop, DenyAll, LoopConfig, LoopError, LoopEvent, LoopOut
 use harness_messages::{Endpoint, MessagesClient};
 use harness_wire::{
     Bearer, BearerSource, CredentialKind, ModelPort, Subject, ToolCall, ToolOutcome, ToolPort,
-    ToolSpec, WireError,
+    ToolSpec, WireError, WireErrorCode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -154,12 +154,12 @@ impl UserModelRunner {
                 .map_err(|_| ExecutionError::Configuration)?;
             let source = Arc::new(LeaseBearerSource { lease, handle });
             let mut model = MessagesClient::new(endpoint, source)
-                .map_err(|_| ExecutionError::ModelUnavailable)?;
+                .map_err(|error| execution_wire_error(&error))?;
             let toolset = toolset.unwrap_or_else(empty_toolset);
             let mut tools = ConnectorTools::new(&toolset, Arc::new(RefusingInvoker));
             let mut sink = TextSink { emit_text };
             let outcome = run(&mut model, &mut tools, &revision, prompt, &mut sink)
-                .map_err(|_| ExecutionError::ModelUnavailable)?;
+                .map_err(|error| execution_loop_error(&error))?;
             if outcome.stop.is_completed() {
                 Ok(outcome.text)
             } else {
@@ -177,12 +177,70 @@ pub enum ExecutionError {
     InvalidInput,
     #[error("the model endpoint configuration is invalid")]
     Configuration,
-    #[error("the user-bound model is unavailable")]
-    ModelUnavailable,
+    #[error("the user-bound model credential is missing, expired, or refused")]
+    CredentialUnavailable,
+    #[error("the model provider could not be reached")]
+    ProviderUnavailable,
+    #[error("the model provider rate limited the attempt")]
+    ProviderRateLimited,
+    #[error("the selected model route or request was refused by the provider")]
+    ProviderRefused,
+    #[error("the model provider returned an unsupported response")]
+    ProviderProtocol,
+    #[error("the model request exceeded a declared bound")]
+    RequestTooLarge,
+    #[error("the model request requires an unsupported feature")]
+    Unsupported,
+    #[error("the model attempt was cancelled")]
+    Cancelled,
+    #[error("the Harness run configuration is invalid")]
+    HarnessConfiguration,
     #[error("the Harness run stopped before completing")]
     Incomplete,
     #[error("the execution worker is unavailable")]
     WorkerUnavailable,
+}
+
+impl ExecutionError {
+    /// Stable redaction-safe failure code stored in Task evidence.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidInput => "task_input_invalid",
+            Self::Configuration => "model_endpoint_invalid",
+            Self::CredentialUnavailable => "model_credential_unavailable",
+            Self::ProviderUnavailable => "model_provider_unavailable",
+            Self::ProviderRateLimited => "model_provider_rate_limited",
+            Self::ProviderRefused => "model_route_refused",
+            Self::ProviderProtocol => "model_provider_protocol_invalid",
+            Self::RequestTooLarge => "model_request_too_large",
+            Self::Unsupported => "model_feature_unsupported",
+            Self::Cancelled => "model_attempt_cancelled",
+            Self::HarnessConfiguration => "harness_configuration_invalid",
+            Self::Incomplete => "harness_incomplete",
+            Self::WorkerUnavailable => "execution_worker_unavailable",
+        }
+    }
+}
+
+fn execution_loop_error(error: &LoopError) -> ExecutionError {
+    match error {
+        LoopError::Wire(error) => execution_wire_error(error),
+        LoopError::Budget(_) => ExecutionError::RequestTooLarge,
+        LoopError::Config(_) => ExecutionError::HarnessConfiguration,
+    }
+}
+
+fn execution_wire_error(error: &WireError) -> ExecutionError {
+    match error.code {
+        WireErrorCode::Transport => ExecutionError::ProviderUnavailable,
+        WireErrorCode::Protocol => ExecutionError::ProviderProtocol,
+        WireErrorCode::Unauthorized => ExecutionError::CredentialUnavailable,
+        WireErrorCode::RateLimited => ExecutionError::ProviderRateLimited,
+        WireErrorCode::Refused => ExecutionError::ProviderRefused,
+        WireErrorCode::TooLarge => ExecutionError::RequestTooLarge,
+        WireErrorCode::Unsupported => ExecutionError::Unsupported,
+        WireErrorCode::Cancelled => ExecutionError::Cancelled,
+    }
 }
 
 struct LeaseBearerSource {
