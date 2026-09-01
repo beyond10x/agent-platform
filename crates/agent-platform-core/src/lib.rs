@@ -204,6 +204,58 @@ pub struct SubmitTask {
     pub input: Value,
 }
 
+/// A prior message supplied to a conversational task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationMessage {
+    pub role: ConversationRole,
+    pub content: String,
+}
+
+/// Closed role vocabulary for prior conversation context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationRole {
+    User,
+    Assistant,
+    System,
+}
+
+/// One bounded text file projected from an exact repository snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectContextFile {
+    pub path: String,
+    pub content: String,
+    pub truncated: bool,
+}
+
+/// Read-only repository context resolved by the project-context provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectContext {
+    pub project_id: String,
+    pub provider: String,
+    pub provider_project_ref: String,
+    pub path_with_namespace: String,
+    pub branch: String,
+    pub commit: String,
+    #[serde(default)]
+    pub files: Vec<ProjectContextFile>,
+}
+
+/// Typed input for one project-bound conversation turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConversationInput {
+    ProjectConversation {
+        prompt: String,
+        #[serde(default)]
+        messages: Vec<ConversationMessage>,
+        context: ProjectContext,
+    },
+}
+
 impl SubmitTask {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_text(

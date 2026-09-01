@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use agent_platform_auth::UserModelLease;
 use agent_platform_connectors::{CompiledCapability, CompiledToolset};
-use agent_platform_core::RevisionSpec;
+use agent_platform_core::{ConversationInput, ConversationRole, RevisionSpec};
 use harness_loop::{AgentLoop, DenyAll, LoopConfig, LoopError, LoopEvent, LoopOutcome, LoopSink};
 use harness_messages::{Endpoint, MessagesClient};
 use harness_wire::{
@@ -244,6 +244,52 @@ fn empty_toolset() -> CompiledToolset {
 }
 
 fn task_prompt(input: &Value) -> Result<String, ExecutionError> {
+    if let Ok(ConversationInput::ProjectConversation {
+        prompt,
+        messages,
+        context,
+    }) = serde_json::from_value::<ConversationInput>(input.clone())
+    {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err(ExecutionError::InvalidInput);
+        }
+        let mut assembled = format!(
+            "Read-only repository project context. Never claim to have observed files outside this exact snapshot.\nProject: {}\nProvider: {}\nProvider project: {}\nBranch: {}\nCommit: {}\n",
+            context.path_with_namespace,
+            context.provider,
+            context.provider_project_ref,
+            context.branch,
+            context.commit
+        );
+        for file in context.files {
+            assembled.push_str("\n--- file: ");
+            assembled.push_str(&file.path);
+            if file.truncated {
+                assembled.push_str(" (truncated)");
+            }
+            assembled.push_str(" ---\n");
+            assembled.push_str(&file.content);
+            assembled.push('\n');
+        }
+        if !messages.is_empty() {
+            assembled.push_str("\nConversation so far:\n");
+        }
+        for message in messages {
+            let role = match message.role {
+                ConversationRole::User => "user",
+                ConversationRole::Assistant => "assistant",
+                ConversationRole::System => "system",
+            };
+            assembled.push_str(role);
+            assembled.push_str(": ");
+            assembled.push_str(message.content.trim());
+            assembled.push('\n');
+        }
+        assembled.push_str("\nCurrent user request:\n");
+        assembled.push_str(prompt);
+        return Ok(assembled);
+    }
     let prompt = match input {
         Value::String(prompt) => Some(prompt.as_str()),
         Value::Object(object) => object.get("prompt").and_then(Value::as_str),
@@ -268,6 +314,29 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn project_conversation_is_bound_to_the_exact_snapshot() {
+        let prompt = task_prompt(&json!({
+            "kind": "project_conversation",
+            "prompt": "Where is startup configured?",
+            "messages": [{"role":"user","content":"Inspect the service."}],
+            "context": {
+                "project_id": "project-one",
+                "provider": "gitlab",
+                "provider_project_ref": "42",
+                "path_with_namespace": "group/service",
+                "branch": "main",
+                "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "files": [{"path":"Cargo.toml","content":"[workspace]","truncated":false}]
+            }
+        }))
+        .unwrap();
+        assert!(prompt.contains("Project: group/service"));
+        assert!(prompt.contains("Commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(prompt.contains("--- file: Cargo.toml ---"));
+        assert!(prompt.ends_with("Where is startup configured?"));
+    }
 
     #[derive(Debug, Default)]
     struct RecordingInvoker {
