@@ -6,14 +6,14 @@ use agent_platform_api::{Operation, ProblemDocument, ROUTES, RouteSpec};
 use agent_platform_app::CapabilityProfile;
 use agent_platform_core::{
     ActivateRevision, Agent, AgentRevision, CreateAgent, CreateCapabilityProfile, CreateTrigger,
-    RevisionSpec, SubmitTask, Task, Trigger,
+    RevisionSpec, SubmitTask, Task, TaskEvent, Trigger,
 };
 use schemars::JsonSchema;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const EXPECTED_OPENAPI_SHA256: &str =
-    "7aab7b4ee044bc8709c63aaee3a3c64a3a6aee11b97a4dd06bd20b7b37585d3a";
+    "594ade779c87cc8f808558acd0fdc5f219cc002820eb869e35f9d01a4d07a023";
 
 /// Builds the complete `OpenAPI` document as a deterministic JSON value.
 ///
@@ -38,6 +38,7 @@ pub fn document() -> Value {
     register::<SubmitTask>("SubmitTask", &mut schemas);
     register::<Task>("Task", &mut schemas);
     register::<Vec<Task>>("TaskList", &mut schemas);
+    register::<TaskEvent>("TaskEvent", &mut schemas);
     register::<CreateTrigger>("CreateTrigger", &mut schemas);
     register::<Trigger>("Trigger", &mut schemas);
     register::<Vec<Trigger>>("TriggerList", &mut schemas);
@@ -57,7 +58,7 @@ pub fn document() -> Value {
         "info": {
             "title": "Agent Platform API",
             "version": env!("CARGO_PKG_VERSION"),
-            "description": "Authenticated, tenant-scoped management of agents, immutable revisions, projected capabilities, tasks and triggers. Accepted tasks are not durable executions in version 0.1.0."
+            "description": "Authenticated, tenant-scoped management of agents, immutable revisions, projected capabilities, tasks, streamed execution evidence and triggers. User-bound execution is process-local; durable worker recovery remains a separate milestone."
         },
         "servers": [{ "url": "/" }],
         "paths": paths,
@@ -117,6 +118,11 @@ fn responses(route: &RouteSpec) -> Value {
             "description": "The service process is alive.",
             "content": { "text/plain": { "schema": { "type": "string", "const": "ok\n" } } }
         })
+    } else if route.operation == Operation::StreamTaskEvents {
+        json!({
+            "description": "A server-sent stream of ordered task events, ending at a terminal event.",
+            "content": { "text/event-stream": { "schema": schema_ref("TaskEvent") } }
+        })
     } else {
         json!({
             "description": "The request was answered.",
@@ -153,6 +159,7 @@ const fn request_schema(operation: Operation) -> Option<&'static str> {
         | Operation::ListCapabilityProfiles
         | Operation::ListTasks
         | Operation::GetTask
+        | Operation::StreamTaskEvents
         | Operation::ListTriggers => None,
     }
 }
@@ -167,6 +174,7 @@ const fn response_schema(operation: Operation) -> &'static str {
         Operation::CreateCapabilityProfile => "CapabilityProfile",
         Operation::ListTasks => "TaskList",
         Operation::SubmitTask | Operation::GetTask => "Task",
+        Operation::StreamTaskEvents => "TaskEvent",
         Operation::ListTriggers => "TriggerList",
         Operation::CreateTrigger => "Trigger",
         Operation::Liveness => "ProblemDocument",

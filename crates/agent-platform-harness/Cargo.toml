@@ -12,10 +12,14 @@ publish.workspace = true
 [dependencies]
 agent-platform-connectors.workspace = true
 agent-platform-core.workspace = true
+agent-platform-auth.workspace = true
 harness-loop.workspace = true
+harness-messages.workspace = true
 harness-wire.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

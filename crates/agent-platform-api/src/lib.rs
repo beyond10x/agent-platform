@@ -11,6 +11,7 @@ pub const ACTIVATE_PATH: &str = "/v1/agents/{agent_id}/activate";
 pub const CAPABILITY_PROFILES_PATH: &str = "/v1/capability-profiles";
 pub const TASKS_PATH: &str = "/v1/tasks";
 pub const TASK_PATH: &str = "/v1/tasks/{task_id}";
+pub const TASK_EVENTS_PATH: &str = "/v1/tasks/{task_id}/events";
 pub const TRIGGERS_PATH: &str = "/v1/triggers";
 pub const OPENAPI_PATH: &str = "/openapi.json";
 pub const DOCS_ROOT_PATH: &str = "/docs";
@@ -47,6 +48,7 @@ pub enum Operation {
     ListTasks,
     SubmitTask,
     GetTask,
+    StreamTaskEvents,
     ListTriggers,
     CreateTrigger,
 }
@@ -66,6 +68,7 @@ impl Operation {
             Self::ListTasks => "listTasks",
             Self::SubmitTask => "submitTask",
             Self::GetTask => "getTask",
+            Self::StreamTaskEvents => "streamTaskEvents",
             Self::ListTriggers => "listTriggers",
             Self::CreateTrigger => "createTrigger",
         }
@@ -85,6 +88,7 @@ impl Operation {
             Self::ListTasks => "List admitted tasks",
             Self::SubmitTask => "Idempotently admit an asynchronous task",
             Self::GetTask => "Get task state",
+            Self::StreamTaskEvents => "Stream task events",
             Self::ListTriggers => "List trigger definitions",
             Self::CreateTrigger => "Create a schedule or webhook trigger definition",
         }
@@ -182,6 +186,13 @@ pub const ROUTES: &[RouteSpec] = &[
         method: Method::Get,
         path: TASK_PATH,
         operation: Operation::GetTask,
+        authenticated: true,
+        success_status: 200,
+    },
+    RouteSpec {
+        method: Method::Get,
+        path: TASK_EVENTS_PATH,
+        operation: Operation::StreamTaskEvents,
         authenticated: true,
         success_status: 200,
     },

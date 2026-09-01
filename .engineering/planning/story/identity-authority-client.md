@@ -2,13 +2,13 @@
 format: aep.planning-md/1
 id: story:identity-authority-client
 kind: story
-status: draft
+status: implemented
 title: Adopt a shared Identity authority client
 summary: Resolve audience-bound opaque credentials into a neutral verified authority contract.
 relations:
 - decomposes: epic:authenticated-control-plane
 - serves: vision:O1
-revision: 1
+revision: 4
 ---
 ## Context
 

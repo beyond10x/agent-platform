@@ -1,0 +1,20 @@
+[package]
+name = "agent-platform-client"
+description = "Credential-safe typed client for the agent-platform HTTP API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-platform-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

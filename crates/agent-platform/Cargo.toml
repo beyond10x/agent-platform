@@ -15,6 +15,7 @@ agent-platform-auth.workspace = true
 agent-platform-connectors.workspace = true
 agent-platform-core.workspace = true
 agent-platform-http.workspace = true
+agent-platform-harness.workspace = true
 agent-platform-openapi.workspace = true
 axum.workspace = true
 clap.workspace = true

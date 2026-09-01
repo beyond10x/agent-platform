@@ -11,10 +11,11 @@ members = [
     "crates/agent-platform-docs",
     "crates/agent-platform-http",
     "crates/agent-platform",
+    "crates/agent-platform-client",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.97"
 license = "LicenseRef-B10x-Proprietary"
@@ -32,24 +33,33 @@ agent-platform-app = { path = "crates/agent-platform-app" }
 agent-platform-openapi = { path = "crates/agent-platform-openapi" }
 agent-platform-docs = { path = "crates/agent-platform-docs" }
 agent-platform-http = { path = "crates/agent-platform-http" }
+agent-platform-client = { path = "crates/agent-platform-client" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
 # keeps this service from reinterpreting that boundary crate by crate.
-harness-wire = { package = "b10x-harness-wire", git = "https://github.com/beyond10x/harness", tag = "0.8.0" }
-harness-loop = { package = "b10x-harness-loop", git = "https://github.com/beyond10x/harness", tag = "0.8.0" }
+harness-wire = { package = "b10x-harness-wire", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
+harness-loop = { package = "b10x-harness-loop", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
+harness-messages = { package = "b10x-harness-messages", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
+identity-client = { git = "ssh://git@github.com/beyond10x/identity.git", tag = "0.3.1" }
+connectors-client = { git = "ssh://git@github.com/beyond10x/connectors.git", tag = "v0.3.1" }
 
 axum = "0.8"
+async-stream = "0.3"
 clap = { version = "4.6", features = ["derive"] }
+futures-core = "0.3"
 hex = "0.4"
 http-body-util = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"
 sha2 = "0.11"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
+url = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
+zeroize = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

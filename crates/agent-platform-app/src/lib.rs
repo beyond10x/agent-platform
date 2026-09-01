@@ -9,12 +9,13 @@ use agent_platform_auth::{
 };
 use agent_platform_connectors::{CompiledToolset, ConnectorCatalog, ProjectionError, compile};
 use agent_platform_core::{
-    ActivateRevision, Agent, AgentId, AgentRevision, CapabilityProfileId, CreateAgent,
-    CreateCapabilityProfile, CreateTrigger, RequestId, RevisionSpec, SubmitTask, Task, TaskId,
-    TaskStatus, TenantId, Trigger, TriggerId, ValidationError,
+    ActivateRevision, Agent, AgentId, AgentRevision, AttemptId, CapabilityProfileId, CreateAgent,
+    CreateCapabilityProfile, CreateTrigger, RequestId, RevisionSpec, SubmitTask, Task, TaskEvent,
+    TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId, ValidationError,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,24 @@ pub struct CapabilityProfile {
     pub created_at_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskExecutionPlan {
+    pub task: Task,
+    pub revision: RevisionSpec,
+    pub toolset: Option<CompiledToolset>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskAdmission {
+    pub plan: TaskExecutionPlan,
+    pub newly_created: bool,
+}
+
+pub struct TaskEventSubscription {
+    pub backlog: Vec<TaskEvent>,
+    pub receiver: broadcast::Receiver<TaskEvent>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ApplicationError {
     #[error("the verified authority lacks `{scope}`")]
@@ -107,6 +126,8 @@ struct TenantState {
     profiles: BTreeMap<CapabilityProfileId, CapabilityProfile>,
     tasks: BTreeMap<TaskId, Task>,
     task_keys: BTreeMap<String, TaskId>,
+    task_events: BTreeMap<TaskId, Vec<TaskEvent>>,
+    task_event_senders: BTreeMap<TaskId, broadcast::Sender<TaskEvent>>,
     triggers: BTreeMap<TriggerId, Trigger>,
 }
 
@@ -323,6 +344,16 @@ impl Application {
         context: &TrustedRequestContext,
         request: SubmitTask,
     ) -> Result<Task, ApplicationError> {
+        let attempt_id = new_attempt_id()?;
+        Ok(self.admit_task(context, request, attempt_id)?.plan.task)
+    }
+
+    pub fn admit_task(
+        &self,
+        context: &TrustedRequestContext,
+        request: SubmitTask,
+        attempt_id: AttemptId,
+    ) -> Result<TaskAdmission, ApplicationError> {
         context.require(TASKS_SUBMIT)?;
         request.validate()?;
         let mut state = self.lock_state()?;
@@ -331,7 +362,24 @@ impl Application {
             && let Some(task) = tenant.tasks.get(task_id)
         {
             if task.agent_id == request.agent_id && task.input == request.input {
-                return Ok(task.clone());
+                let revision = tenant
+                    .revisions
+                    .get(&task.agent_id)
+                    .and_then(|revisions| revisions.get(&task.agent_revision))
+                    .ok_or(ApplicationError::RevisionNotFound)?;
+                let toolset = task
+                    .capability_profile_id
+                    .as_ref()
+                    .and_then(|id| tenant.profiles.get(id))
+                    .map(|profile| profile.compiled.clone());
+                return Ok(TaskAdmission {
+                    plan: TaskExecutionPlan {
+                        task: task.clone(),
+                        revision: revision.spec.clone(),
+                        toolset,
+                    },
+                    newly_created: false,
+                });
             }
             return Err(ApplicationError::IdempotencyConflict);
         }
@@ -356,17 +404,47 @@ impl Application {
             idempotency_key: request.idempotency_key,
             input: request.input,
             status: TaskStatus::Accepted,
+            attempt_id: attempt_id.clone(),
+            output: None,
+            failure: None,
             actor: context.authority.authority().clone(),
             executor: context.authority.executor().cloned(),
             delegation_id: context.authority.delegation_id().cloned(),
             request_id: context.request_id.clone(),
             accepted_at_ms: context.received_at_ms,
+            completed_at_ms: None,
         };
+        let toolset = task
+            .capability_profile_id
+            .as_ref()
+            .and_then(|id| tenant.profiles.get(id))
+            .map(|profile| profile.compiled.clone());
+        let revision = revision.spec.clone();
         tenant
             .task_keys
             .insert(task.idempotency_key.clone(), task.id.clone());
         tenant.tasks.insert(task.id.clone(), task.clone());
-        Ok(task)
+        let event = TaskEvent {
+            task_id: task.id.clone(),
+            attempt_id,
+            sequence: 1,
+            occurred_at_ms: context.received_at_ms,
+            event: TaskEventKind::Accepted,
+        };
+        tenant
+            .task_events
+            .insert(task.id.clone(), vec![event.clone()]);
+        let (sender, _) = broadcast::channel(256);
+        let _ = sender.send(event);
+        tenant.task_event_senders.insert(task.id.clone(), sender);
+        Ok(TaskAdmission {
+            plan: TaskExecutionPlan {
+                task,
+                revision,
+                toolset,
+            },
+            newly_created: true,
+        })
     }
 
     pub fn list_tasks(
@@ -392,6 +470,169 @@ impl Application {
             .and_then(|tenant| tenant.tasks.get(task_id))
             .cloned()
             .ok_or(ApplicationError::TaskNotFound)
+    }
+
+    pub fn subscribe_task_events(
+        &self,
+        context: &TrustedRequestContext,
+        task_id: &TaskId,
+    ) -> Result<TaskEventSubscription, ApplicationError> {
+        context.require(TASKS_READ)?;
+        let state = self.lock_state()?;
+        let tenant = tenant(&state, context).ok_or(ApplicationError::TaskNotFound)?;
+        if !tenant.tasks.contains_key(task_id) {
+            return Err(ApplicationError::TaskNotFound);
+        }
+        let backlog = tenant.task_events.get(task_id).cloned().unwrap_or_default();
+        let receiver = tenant
+            .task_event_senders
+            .get(task_id)
+            .ok_or(ApplicationError::StateUnavailable)?
+            .subscribe();
+        Ok(TaskEventSubscription { backlog, receiver })
+    }
+
+    pub fn task_events_after(
+        &self,
+        context: &TrustedRequestContext,
+        task_id: &TaskId,
+        sequence: u64,
+    ) -> Result<Vec<TaskEvent>, ApplicationError> {
+        context.require(TASKS_READ)?;
+        let state = self.lock_state()?;
+        let tenant = tenant(&state, context).ok_or(ApplicationError::TaskNotFound)?;
+        if !tenant.tasks.contains_key(task_id) {
+            return Err(ApplicationError::TaskNotFound);
+        }
+        Ok(tenant
+            .task_events
+            .get(task_id)
+            .map_or_else(Vec::new, |events| {
+                events
+                    .iter()
+                    .filter(|event| event.sequence > sequence)
+                    .cloned()
+                    .collect()
+            }))
+    }
+
+    pub fn mark_task_running(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+    ) -> Result<(), ApplicationError> {
+        self.transition_task(
+            tenant_id,
+            task_id,
+            attempt_id,
+            at_ms,
+            TaskStatus::Running,
+            TaskEventKind::Running,
+            None,
+            None,
+        )
+    }
+
+    pub fn append_task_text(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        text: String,
+    ) -> Result<(), ApplicationError> {
+        let mut state = self.lock_state()?;
+        let tenant = state
+            .tenants
+            .get_mut(tenant_id)
+            .ok_or(ApplicationError::TaskNotFound)?;
+        require_attempt(tenant, task_id, attempt_id)?;
+        append_event(
+            tenant,
+            task_id,
+            attempt_id,
+            at_ms,
+            TaskEventKind::TextDelta { text },
+        )
+    }
+
+    pub fn succeed_task(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        output: String,
+    ) -> Result<(), ApplicationError> {
+        self.transition_task(
+            tenant_id,
+            task_id,
+            attempt_id,
+            at_ms,
+            TaskStatus::Succeeded,
+            TaskEventKind::Succeeded {
+                output: output.clone(),
+            },
+            Some(output),
+            None,
+        )
+    }
+
+    pub fn fail_task(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        failure: TaskFailure,
+    ) -> Result<(), ApplicationError> {
+        self.transition_task(
+            tenant_id,
+            task_id,
+            attempt_id,
+            at_ms,
+            TaskStatus::Failed,
+            TaskEventKind::Failed {
+                failure: failure.clone(),
+            },
+            None,
+            Some(failure),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transition_task(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        status: TaskStatus,
+        event: TaskEventKind,
+        output: Option<String>,
+        failure: Option<TaskFailure>,
+    ) -> Result<(), ApplicationError> {
+        let mut state = self.lock_state()?;
+        let tenant = state
+            .tenants
+            .get_mut(tenant_id)
+            .ok_or(ApplicationError::TaskNotFound)?;
+        let task = tenant
+            .tasks
+            .get_mut(task_id)
+            .ok_or(ApplicationError::TaskNotFound)?;
+        if &task.attempt_id != attempt_id {
+            return Err(ApplicationError::TaskNotFound);
+        }
+        task.status = status;
+        task.output = output;
+        task.failure = failure;
+        if matches!(status, TaskStatus::Succeeded | TaskStatus::Failed) {
+            task.completed_at_ms = Some(at_ms);
+        }
+        append_event(tenant, task_id, attempt_id, at_ms, event)
     }
 
     pub fn create_trigger(
@@ -469,6 +710,52 @@ fn new_profile_id() -> Result<CapabilityProfileId, ApplicationError> {
 
 fn new_task_id() -> Result<TaskId, ApplicationError> {
     TaskId::new(format!("tsk_{}", Uuid::now_v7().simple())).map_err(Into::into)
+}
+
+fn new_attempt_id() -> Result<AttemptId, ApplicationError> {
+    AttemptId::new(format!("atm_{}", Uuid::now_v7().simple())).map_err(Into::into)
+}
+
+fn require_attempt(
+    tenant: &TenantState,
+    task_id: &TaskId,
+    attempt_id: &AttemptId,
+) -> Result<(), ApplicationError> {
+    if tenant
+        .tasks
+        .get(task_id)
+        .is_some_and(|task| &task.attempt_id == attempt_id)
+    {
+        Ok(())
+    } else {
+        Err(ApplicationError::TaskNotFound)
+    }
+}
+
+fn append_event(
+    tenant: &mut TenantState,
+    task_id: &TaskId,
+    attempt_id: &AttemptId,
+    at_ms: u64,
+    event: TaskEventKind,
+) -> Result<(), ApplicationError> {
+    let events = tenant.task_events.entry(task_id.clone()).or_default();
+    let sequence = u64::try_from(events.len())
+        .ok()
+        .and_then(|value| value.checked_add(1))
+        .ok_or(ApplicationError::StateUnavailable)?;
+    let event = TaskEvent {
+        task_id: task_id.clone(),
+        attempt_id: attempt_id.clone(),
+        sequence,
+        occurred_at_ms: at_ms,
+        event,
+    };
+    events.push(event.clone());
+    if let Some(sender) = tenant.task_event_senders.get(task_id) {
+        let _ = sender.send(event);
+    }
+    Ok(())
 }
 
 fn new_trigger_id() -> Result<TriggerId, ApplicationError> {
@@ -615,5 +902,71 @@ mod tests {
             },
         );
         assert_eq!(changed, Err(ApplicationError::IdempotencyConflict));
+    }
+
+    #[test]
+    fn execution_events_are_ordered_and_exact_attempt_tenant_scoped() {
+        let app = Application::new(Arc::new(EmptyCatalog));
+        let tenant_one = context("tenant-one", 10);
+        let other = context("tenant-two", 11);
+        let (agent, _) = active_agent(&app, &tenant_one);
+        let task = app
+            .submit_task(
+                &tenant_one,
+                SubmitTask {
+                    agent_id: agent.id,
+                    idempotency_key: "execution-one".to_owned(),
+                    input: serde_json::json!({"prompt": "hello"}),
+                },
+            )
+            .unwrap();
+        app.mark_task_running(
+            &task.tenant_id,
+            &task.id,
+            &task.attempt_id,
+            task.accepted_at_ms + 1,
+        )
+        .unwrap();
+        app.append_task_text(
+            &task.tenant_id,
+            &task.id,
+            &task.attempt_id,
+            task.accepted_at_ms + 2,
+            "hello".to_owned(),
+        )
+        .unwrap();
+        app.succeed_task(
+            &task.tenant_id,
+            &task.id,
+            &task.attempt_id,
+            task.accepted_at_ms + 3,
+            "hello".to_owned(),
+        )
+        .unwrap();
+
+        let events = app
+            .subscribe_task_events(&tenant_one, &task.id)
+            .unwrap()
+            .backlog;
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert!(matches!(events[0].event, TaskEventKind::Accepted));
+        assert!(matches!(events[1].event, TaskEventKind::Running));
+        assert!(matches!(events[2].event, TaskEventKind::TextDelta { .. }));
+        assert!(matches!(events[3].event, TaskEventKind::Succeeded { .. }));
+        assert!(matches!(
+            app.subscribe_task_events(&other, &task.id),
+            Err(ApplicationError::TaskNotFound)
+        ));
+        let wrong_attempt = AttemptId::new("atm_wrong").unwrap();
+        assert_eq!(
+            app.mark_task_running(&task.tenant_id, &task.id, &wrong_attempt, 99),
+            Err(ApplicationError::TaskNotFound)
+        );
     }
 }

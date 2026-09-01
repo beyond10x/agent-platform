@@ -16,6 +16,7 @@ agent-platform-core.workspace = true
 serde.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

@@ -80,6 +80,7 @@ id_type!(SubjectId, "subject id");
 id_type!(AgentId, "agent id");
 id_type!(CapabilityProfileId, "capability profile id");
 id_type!(TaskId, "task id");
+id_type!(AttemptId, "attempt id");
 id_type!(TriggerId, "trigger id");
 id_type!(RequestId, "request id");
 id_type!(DelegationId, "delegation id");
@@ -242,11 +243,45 @@ pub struct Task {
     pub idempotency_key: String,
     pub input: Value,
     pub status: TaskStatus,
+    pub attempt_id: AttemptId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<TaskFailure>,
     pub actor: SubjectId,
     pub executor: Option<SubjectId>,
     pub delegation_id: Option<DelegationId>,
     pub request_id: RequestId,
     pub accepted_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskFailure {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskEventKind {
+    Accepted,
+    Running,
+    TextDelta { text: String },
+    Succeeded { output: String },
+    Failed { failure: TaskFailure },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskEvent {
+    pub task_id: TaskId,
+    pub attempt_id: AttemptId,
+    pub sequence: u64,
+    pub occurred_at_ms: u64,
+    pub event: TaskEventKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

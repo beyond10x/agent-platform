@@ -8,13 +8,15 @@ use std::sync::Arc;
 
 use agent_platform_app::Application;
 use agent_platform_auth::{
-    AGENTS_MANAGE, AGENTS_READ, CAPABILITIES_MANAGE, CAPABILITIES_READ, DevelopmentVerifier,
-    TASKS_READ, TASKS_SUBMIT, TRIGGERS_MANAGE, TRIGGERS_READ, VerifiedAuthority,
+    AGENTS_MANAGE, AGENTS_READ, CAPABILITIES_MANAGE, CAPABILITIES_READ, CredentialVerifier,
+    DevelopmentVerifier, IdentityVerifier, TASKS_READ, TASKS_SUBMIT, TRIGGERS_MANAGE,
+    TRIGGERS_READ, VerifiedAuthority,
 };
 use agent_platform_connectors::{InMemoryCatalog, OperationDescription};
 use agent_platform_core::{SubjectId, TenantId};
+use agent_platform_harness::UserModelRunner;
 use agent_platform_http::{HttpState, router};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 const MAX_CATALOG_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -28,19 +30,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run the loopback development management service.
-    Serve {
-        #[arg(long, default_value = "127.0.0.1:8090")]
-        listen: SocketAddr,
-        #[arg(long)]
-        allow_insecure_dev_listener: bool,
-        #[arg(long, default_value = "local")]
-        tenant: String,
-        #[arg(long, default_value = "human:developer")]
-        subject: String,
-        /// Synthetic or operator-owned Connector descriptions for the walking slice.
-        #[arg(long)]
-        connector_catalog: Option<PathBuf>,
-    },
+    Serve(Box<ServeOptions>),
     /// Write the exact `OpenAPI` document served at `/openapi.json`.
     Openapi {
         /// Print only the deterministic SHA-256 digest.
@@ -49,25 +39,38 @@ enum Command {
     },
 }
 
+#[derive(Debug, Args)]
+struct ServeOptions {
+    #[arg(long, default_value = "127.0.0.1:8090")]
+    listen: SocketAddr,
+    #[arg(long)]
+    allow_insecure_dev_listener: bool,
+    /// Identity service origin. When present, requests use production session authority.
+    #[arg(long)]
+    identity_origin: Option<String>,
+    #[arg(long, default_value = "urn:b10x:agent-platform")]
+    identity_audience: String,
+    /// Identity-authenticated hosted Connectors API base used for attempt leases.
+    #[arg(long)]
+    connectors_api_base: Option<String>,
+    /// Messages-compatible provider API prefix used by Harness.
+    #[arg(long, default_value = "https://api.anthropic.com/v1")]
+    model_endpoint_base: String,
+    #[arg(long, default_value_t = 200_000)]
+    model_context_window: u64,
+    #[arg(long, default_value = "local")]
+    tenant: String,
+    #[arg(long, default_value = "human:developer")]
+    subject: String,
+    /// Synthetic or operator-owned Connector descriptions for the walking slice.
+    #[arg(long)]
+    connector_catalog: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     match Cli::parse().command {
-        Command::Serve {
-            listen,
-            allow_insecure_dev_listener,
-            tenant,
-            subject,
-            connector_catalog,
-        } => {
-            serve(
-                listen,
-                allow_insecure_dev_listener,
-                tenant,
-                subject,
-                connector_catalog.as_deref(),
-            )
-            .await
-        }
+        Command::Serve(options) => serve(&options).await,
         Command::Openapi { digest } => {
             if digest {
                 println!("{}", agent_platform_openapi::document_sha256());
@@ -79,26 +82,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn serve(
-    listen: SocketAddr,
-    allow_insecure_dev_listener: bool,
-    tenant: String,
-    subject: String,
-    connector_catalog: Option<&Path>,
-) -> Result<(), Box<dyn Error>> {
-    if !listen.ip().is_loopback() && !allow_insecure_dev_listener {
+async fn serve(options: &ServeOptions) -> Result<(), Box<dyn Error>> {
+    let identity_origin = options.identity_origin.as_deref();
+    let connectors_api_base = options.connectors_api_base.as_deref();
+    if identity_origin.is_none()
+        && !options.listen.ip().is_loopback()
+        && !options.allow_insecure_dev_listener
+    {
         return Err(
             "the development verifier may bind only loopback; pass --allow-insecure-dev-listener for an isolated preview"
                 .into(),
         );
     }
-    if !listen.ip().is_loopback() {
+    if identity_origin.is_none() && !options.listen.ip().is_loopback() {
         eprintln!(
-            "warning: exposing the fixed development bearer verifier on {listen}; this is not production authentication"
+            "warning: exposing the fixed development bearer verifier on {}; this is not production authentication",
+            options.listen
         );
     }
-    let token = std::env::var("AGENT_PLATFORM_DEV_BEARER_TOKEN")
-        .map_err(|_| "AGENT_PLATFORM_DEV_BEARER_TOKEN is required")?;
     let scopes = [
         AGENTS_MANAGE,
         AGENTS_READ,
@@ -110,23 +111,50 @@ async fn serve(
         TRIGGERS_READ,
     ]
     .into_iter()
-    .map(str::to_owned);
-    let authority = VerifiedAuthority::new(
-        TenantId::new(tenant)?,
-        SubjectId::new(subject)?,
-        None,
-        None,
-        scopes,
-    )?;
-    let verifier = Arc::new(DevelopmentVerifier::new(&token, authority)?);
-    drop(token);
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let verifier: Arc<dyn CredentialVerifier> = if let Some(identity_origin) = identity_origin {
+        let verifier = IdentityVerifier::new(identity_origin, &options.identity_audience, scopes)?;
+        let verifier = if let Some(connectors_api_base) = connectors_api_base {
+            verifier.with_connectors(connectors_api_base)?
+        } else {
+            verifier
+        };
+        Arc::new(verifier)
+    } else {
+        let token = std::env::var("AGENT_PLATFORM_DEV_BEARER_TOKEN")
+            .map_err(|_| "AGENT_PLATFORM_DEV_BEARER_TOKEN is required")?;
+        let authority = VerifiedAuthority::new(
+            TenantId::new(options.tenant.clone())?,
+            SubjectId::new(options.subject.clone())?,
+            None,
+            None,
+            scopes,
+        )?;
+        let verifier = Arc::new(DevelopmentVerifier::new(&token, authority)?);
+        drop(token);
+        verifier
+    };
 
-    let descriptions = connector_catalog.map_or_else(|| Ok(Vec::new()), read_catalog)?;
+    let descriptions = options
+        .connector_catalog
+        .as_deref()
+        .map_or_else(|| Ok(Vec::new()), read_catalog)?;
     let catalog = Arc::new(InMemoryCatalog::new(descriptions));
     let app = Application::new(catalog);
-    let listener = tokio::net::TcpListener::bind(listen).await?;
-    println!("agent-platform development service listening on {listen}");
-    axum::serve(listener, router(HttpState::new(app, verifier)))
+    let mut http_state = HttpState::new(app, verifier);
+    if connectors_api_base.is_some() {
+        http_state = http_state.with_runner(UserModelRunner::new(
+            &options.model_endpoint_base,
+            options.model_context_window,
+        )?);
+    }
+    let listener = tokio::net::TcpListener::bind(options.listen).await?;
+    println!(
+        "agent-platform development service listening on {}",
+        options.listen
+    );
+    axum::serve(listener, router(http_state))
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())

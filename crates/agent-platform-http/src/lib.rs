@@ -6,18 +6,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agent_platform_api::{
     ACTIVATE_PATH, AGENT_PATH, AGENTS_PATH, CAPABILITY_PROFILES_PATH, DOCS_API_PATH,
     DOCS_INDEX_PATH, DOCS_ROOT_PATH, DOCS_STYLES_PATH, LIVENESS_PATH, OPENAPI_PATH,
-    ProblemDocument, REVISIONS_PATH, TASK_PATH, TASKS_PATH, TRIGGERS_PATH,
+    ProblemDocument, REVISIONS_PATH, TASK_EVENTS_PATH, TASK_PATH, TASKS_PATH, TRIGGERS_PATH,
 };
-use agent_platform_app::{Application, ApplicationError, TrustedRequestContext};
-use agent_platform_auth::CredentialVerifier;
+use agent_platform_app::{Application, ApplicationError, TaskExecutionPlan, TrustedRequestContext};
+use agent_platform_auth::{CredentialVerifier, UserModelLease};
 use agent_platform_core::{
-    ActivateRevision, AgentId, CreateAgent, CreateCapabilityProfile, CreateTrigger, RequestId,
-    RevisionSpec, SubmitTask, TaskId,
+    ActivateRevision, AgentId, AttemptId, CreateAgent, CreateCapabilityProfile, CreateTrigger,
+    RequestId, RevisionSpec, SubmitTask, TaskEventKind, TaskFailure, TaskId,
 };
+use agent_platform_harness::UserModelRunner;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Extension, Path, State};
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -32,12 +34,29 @@ static OPENAPI: LazyLock<Bytes> =
 pub struct HttpState {
     app: Application,
     verifier: Arc<dyn CredentialVerifier>,
+    runner: Option<UserModelRunner>,
 }
 
 impl HttpState {
     pub fn new(app: Application, verifier: Arc<dyn CredentialVerifier>) -> Self {
-        Self { app, verifier }
+        Self {
+            app,
+            verifier,
+            runner: None,
+        }
     }
+
+    #[must_use]
+    pub fn with_runner(mut self, runner: UserModelRunner) -> Self {
+        self.runner = Some(runner);
+        self
+    }
+}
+
+#[derive(Clone)]
+struct AttemptAdmission {
+    attempt_id: AttemptId,
+    lease: Option<Arc<UserModelLease>>,
 }
 
 pub fn router(state: HttpState) -> Router {
@@ -52,6 +71,7 @@ pub fn router(state: HttpState) -> Router {
         )
         .route(TASKS_PATH, get(list_tasks).post(submit_task))
         .route(TASK_PATH, get(get_task))
+        .route(TASK_EVENTS_PATH, get(stream_task_events))
         .route(TRIGGERS_PATH, get(list_triggers).post(create_trigger))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
 
@@ -79,10 +99,29 @@ async fn authenticate(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    let authority = match state.verifier.verify(authorization).await {
-        Ok(authority) => authority,
+    let attempt_id = (request.method() == axum::http::Method::POST
+        && request.uri().path() == TASKS_PATH)
+        .then(new_attempt_id)
+        .transpose();
+    let attempt_id = match attempt_id {
+        Ok(attempt_id) => attempt_id,
+        Err(error) => {
+            return problem(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "attempt_identity_unavailable",
+                &error,
+            );
+        }
+    };
+    let authenticated = match state
+        .verifier
+        .verify(authorization, attempt_id.as_ref())
+        .await
+    {
+        Ok(authenticated) => authenticated,
         Err(error) => return problem(StatusCode::UNAUTHORIZED, "unauthenticated", error.reason()),
     };
+    let (authority, lease) = authenticated.into_parts();
     let request_id = match RequestId::new(format!("req_{}", Uuid::now_v7().simple())) {
         Ok(request_id) => request_id,
         Err(error) => {
@@ -108,6 +147,11 @@ async fn authenticate(
         request_id,
         received_at_ms,
     ));
+    if let Some(attempt_id) = attempt_id {
+        request
+            .extensions_mut()
+            .insert(AttemptAdmission { attempt_id, lease });
+    }
     next.run(request).await
 }
 
@@ -277,12 +321,19 @@ async fn list_capability_profiles(
 async fn submit_task(
     State(state): State<HttpState>,
     Extension(context): Extension<TrustedRequestContext>,
+    Extension(attempt): Extension<AttemptAdmission>,
     Json(request): Json<SubmitTask>,
 ) -> Response {
-    result(
-        StatusCode::ACCEPTED,
-        state.app.submit_task(&context, request),
-    )
+    let admission = match state.app.admit_task(&context, request, attempt.attempt_id) {
+        Ok(admission) => admission,
+        Err(error) => return application_error(&error),
+    };
+    if admission.newly_created
+        && let (Some(runner), Some(lease)) = (state.runner.clone(), attempt.lease)
+    {
+        spawn_execution(state.app.clone(), runner, admission.plan.clone(), lease);
+    }
+    (StatusCode::ACCEPTED, Json(admission.plan.task)).into_response()
 }
 
 async fn list_tasks(
@@ -302,6 +353,136 @@ async fn get_task(
         Err(error) => return application_error(&ApplicationError::Invalid(error)),
     };
     result(StatusCode::OK, state.app.get_task(&context, &task_id))
+}
+
+async fn stream_task_events(
+    State(state): State<HttpState>,
+    Extension(context): Extension<TrustedRequestContext>,
+    Path(task_id): Path<String>,
+) -> Response {
+    let task_id = match TaskId::new(task_id) {
+        Ok(task_id) => task_id,
+        Err(error) => return application_error(&ApplicationError::Invalid(error)),
+    };
+    let subscription = match state.app.subscribe_task_events(&context, &task_id) {
+        Ok(subscription) => subscription,
+        Err(error) => return application_error(&error),
+    };
+    let mut receiver = subscription.receiver;
+    let events = async_stream::stream! {
+        let mut terminal = false;
+        let mut last_sequence = 0;
+        for event in subscription.backlog {
+            terminal = matches!(event.event, TaskEventKind::Succeeded { .. } | TaskEventKind::Failed { .. });
+            last_sequence = event.sequence;
+            let id = event.sequence.to_string();
+            match Event::default().id(id).event("task").json_data(event) {
+                Ok(event) => yield Ok::<Event, std::convert::Infallible>(event),
+                Err(_) => return,
+            }
+        }
+        while !terminal {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if event.sequence <= last_sequence {
+                        continue;
+                    }
+                    terminal = matches!(event.event, TaskEventKind::Succeeded { .. } | TaskEventKind::Failed { .. });
+                    last_sequence = event.sequence;
+                    let id = event.sequence.to_string();
+                    match Event::default().id(id).event("task").json_data(event) {
+                        Ok(event) => yield Ok::<Event, std::convert::Infallible>(event),
+                        Err(_) => return,
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let Ok(recovered) = state
+                        .app
+                        .task_events_after(&context, &task_id, last_sequence)
+                    else {
+                        return;
+                    };
+                    for event in recovered {
+                        terminal = matches!(event.event, TaskEventKind::Succeeded { .. } | TaskEventKind::Failed { .. });
+                        last_sequence = event.sequence;
+                        let id = event.sequence.to_string();
+                        match Event::default().id(id).event("task").json_data(event) {
+                            Ok(event) => yield Ok::<Event, std::convert::Infallible>(event),
+                            Err(_) => return,
+                        }
+                    }
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Sse::new(events)
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+        .into_response()
+}
+
+fn spawn_execution(
+    app: Application,
+    runner: UserModelRunner,
+    plan: TaskExecutionPlan,
+    lease: Arc<UserModelLease>,
+) {
+    tokio::spawn(async move {
+        let tenant_id = plan.task.tenant_id.clone();
+        let task_id = plan.task.id.clone();
+        let attempt_id = plan.task.attempt_id.clone();
+        if app
+            .mark_task_running(&tenant_id, &task_id, &attempt_id, now_ms())
+            .is_err()
+        {
+            return;
+        }
+        let event_app = app.clone();
+        let event_tenant = tenant_id.clone();
+        let event_task = task_id.clone();
+        let event_attempt = attempt_id.clone();
+        let emit = Arc::new(move |text: String| {
+            let _ = event_app.append_task_text(
+                &event_tenant,
+                &event_task,
+                &event_attempt,
+                now_ms(),
+                text,
+            );
+        });
+        match runner
+            .execute(plan.revision, plan.toolset, plan.task.input, lease, emit)
+            .await
+        {
+            Ok(output) => {
+                let _ = app.succeed_task(&tenant_id, &task_id, &attempt_id, now_ms(), output);
+            }
+            Err(error) => {
+                let _ = app.fail_task(
+                    &tenant_id,
+                    &task_id,
+                    &attempt_id,
+                    now_ms(),
+                    TaskFailure {
+                        code: "execution_failed".to_owned(),
+                        message: error.to_string(),
+                    },
+                );
+            }
+        }
+    });
+}
+
+fn new_attempt_id() -> Result<AttemptId, String> {
+    AttemptId::new(format!("atm_{}", Uuid::now_v7().simple())).map_err(|error| error.to_string())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 async fn create_trigger(

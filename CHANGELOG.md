@@ -4,6 +4,20 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-01
+
+- Added production Identity session verification and exact audience/scope exchange through the
+  official Identity client; tenant and subject authority remain outside Agent Platform.
+- Added attempt-bound user model execution: task admission creates an exact Connector credential
+  lease, Harness redeems it only at the provider boundary, and the application layer never receives
+  credential material.
+- Added ordered, tenant-scoped task execution events over server-sent events, including text deltas,
+  terminal output, and named failures with bounded lag recovery.
+- Added the private typed `agent-platform-client` crate for Devcenter and other trusted service
+  compositions.
+- Kept this walking slice explicitly process-local; durable dispatch, restart recovery, Connector
+  operation execution, approvals, and trigger delivery remain later milestones.
+
 ## [0.2.0] — 2026-08-31
 
 - Added one shared API route catalog consumed by the Axum router and deterministic OpenAPI 3.1

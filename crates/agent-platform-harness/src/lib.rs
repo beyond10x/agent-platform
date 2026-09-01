@@ -3,10 +3,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use agent_platform_auth::UserModelLease;
 use agent_platform_connectors::{CompiledCapability, CompiledToolset};
 use agent_platform_core::RevisionSpec;
-use harness_loop::{AgentLoop, DenyAll, LoopConfig, LoopError, LoopOutcome, LoopSink};
-use harness_wire::{ModelPort, Subject, ToolCall, ToolOutcome, ToolPort, ToolSpec};
+use harness_loop::{AgentLoop, DenyAll, LoopConfig, LoopError, LoopEvent, LoopOutcome, LoopSink};
+use harness_messages::{Endpoint, MessagesClient};
+use harness_wire::{
+    Bearer, BearerSource, CredentialKind, ModelPort, Subject, ToolCall, ToolOutcome, ToolPort,
+    ToolSpec, WireError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -109,6 +114,145 @@ pub fn run(
         LoopConfig::new(revision.model.clone(), revision.instructions.clone()),
     )
     .run(input, sink)
+}
+
+#[derive(Debug, Clone)]
+pub struct UserModelRunner {
+    endpoint_base: String,
+    context_window: u64,
+}
+
+impl UserModelRunner {
+    pub fn new(
+        endpoint_base: impl Into<String>,
+        context_window: u64,
+    ) -> Result<Self, ExecutionError> {
+        let endpoint_base = endpoint_base.into();
+        if context_window == 0 || endpoint_base.trim().is_empty() {
+            return Err(ExecutionError::Configuration);
+        }
+        Ok(Self {
+            endpoint_base,
+            context_window,
+        })
+    }
+
+    pub async fn execute(
+        &self,
+        revision: RevisionSpec,
+        toolset: Option<CompiledToolset>,
+        input: Value,
+        lease: Arc<UserModelLease>,
+        emit_text: Arc<dyn Fn(String) + Send + Sync>,
+    ) -> Result<String, ExecutionError> {
+        let prompt = task_prompt(&input)?;
+        let endpoint_base = self.endpoint_base.clone();
+        let context_window = self.context_window;
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let endpoint = Endpoint::new(endpoint_base, revision.model.clone(), context_window)
+                .map_err(|_| ExecutionError::Configuration)?;
+            let source = Arc::new(LeaseBearerSource { lease, handle });
+            let mut model = MessagesClient::new(endpoint, source)
+                .map_err(|_| ExecutionError::ModelUnavailable)?;
+            let toolset = toolset.unwrap_or_else(empty_toolset);
+            let mut tools = ConnectorTools::new(&toolset, Arc::new(RefusingInvoker));
+            let mut sink = TextSink { emit_text };
+            let outcome = run(&mut model, &mut tools, &revision, prompt, &mut sink)
+                .map_err(|_| ExecutionError::ModelUnavailable)?;
+            if outcome.stop.is_completed() {
+                Ok(outcome.text)
+            } else {
+                Err(ExecutionError::Incomplete)
+            }
+        })
+        .await
+        .map_err(|_| ExecutionError::WorkerUnavailable)?
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ExecutionError {
+    #[error("task input must be a string or an object containing a non-empty `prompt` string")]
+    InvalidInput,
+    #[error("the model endpoint configuration is invalid")]
+    Configuration,
+    #[error("the user-bound model is unavailable")]
+    ModelUnavailable,
+    #[error("the Harness run stopped before completing")]
+    Incomplete,
+    #[error("the execution worker is unavailable")]
+    WorkerUnavailable,
+}
+
+struct LeaseBearerSource {
+    lease: Arc<UserModelLease>,
+    handle: tokio::runtime::Handle,
+}
+
+impl std::fmt::Debug for LeaseBearerSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LeaseBearerSource")
+            .field("lease", &self.lease)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BearerSource for LeaseBearerSource {
+    fn bearer(&self) -> Result<Bearer, WireError> {
+        let credential = self.handle.block_on(self.lease.redeem()).map_err(|_| {
+            WireError::unauthorized("the attempt model lease could not be redeemed")
+        })?;
+        Ok(Bearer::new(
+            credential.expose_at_provider_boundary().to_owned(),
+        ))
+    }
+
+    fn kind(&self) -> CredentialKind {
+        CredentialKind::Oauth
+    }
+}
+
+struct TextSink {
+    emit_text: Arc<dyn Fn(String) + Send + Sync>,
+}
+
+impl LoopSink for TextSink {
+    fn emit(&mut self, event: LoopEvent) {
+        if let LoopEvent::TextDelta { text } = event {
+            (self.emit_text)(text);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RefusingInvoker;
+
+impl ConnectorInvoker for RefusingInvoker {
+    fn invoke(&self, _: ConnectorInvocation) -> ToolOutcome {
+        ToolOutcome::failed("Connector invocation is not configured for this worker")
+    }
+}
+
+fn empty_toolset() -> CompiledToolset {
+    CompiledToolset {
+        connector_contract: agent_platform_connectors::CONNECTOR_OPERATION_CONTRACT.to_owned(),
+        digest_sha256: "0".repeat(64),
+        capabilities: Vec::new(),
+    }
+}
+
+fn task_prompt(input: &Value) -> Result<String, ExecutionError> {
+    let prompt = match input {
+        Value::String(prompt) => Some(prompt.as_str()),
+        Value::Object(object) => object.get("prompt").and_then(Value::as_str),
+        _ => None,
+    }
+    .map(str::trim)
+    .filter(|prompt| !prompt.is_empty())
+    .ok_or(ExecutionError::InvalidInput)?;
+    Ok(prompt.to_owned())
 }
 
 #[cfg(test)]

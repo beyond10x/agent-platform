@@ -9,16 +9,16 @@ This repository and its release artifacts are private.
 - [Harness](https://github.com/beyond10x/harness) owns the model/tool loop.
 - [Connectors](https://github.com/beyond10x/connectors) owns external operations, credentials,
   grants, invocation and connector audit.
-- Identity owns tenant and principal truth; the current walking slice supplies only a loopback
-  development verifier.
+- Identity owns tenant and principal truth. Production requests are verified and exchanged through
+  its official private client; a loopback-only development verifier remains available for local use.
 - Substrate owns confined execution and llmgw will own production model routing.
 
-The first walking slice implements authenticated in-memory management of agents and revisions,
+The current walking slice implements authenticated in-memory management of agents and revisions,
 deterministic Connector-operation to Harness-tool projection, idempotent task intake, and schedule or
-webhook trigger definitions. Its Harness adapter embeds Harness 0.8.0 and has a model-free
-tool-round-trip test; the HTTP task path deliberately stops at `accepted`. It does not claim durable
-worker execution, production Identity, live Connector invocation, approvals or trigger delivery;
-those are separate AEP stories.
+webhook trigger definitions. Its Harness adapter embeds Harness 0.10.0. User-bound Tasks run through
+an attempt-scoped Connector lease and stream ordered execution evidence over SSE. It does not claim
+durable worker recovery, live Connector operation invocation, approvals or trigger delivery; those
+are separate AEP stories.
 
 ## Run the development service
 
@@ -60,12 +60,15 @@ materialized.
 | `GET/POST /v1/capability-profiles` | list or compile Connector mappings into Harness tools |
 | `GET/POST /v1/tasks` | list or idempotently admit asynchronous work |
 | `GET /v1/tasks/{task_id}` | read pinned task state |
+| `GET /v1/tasks/{task_id}/events` | stream ordered events for the admitted attempt as SSE |
 | `GET/POST /v1/triggers` | list or define schedule/webhook task sources |
 | `GET /livez` | unauthenticated process liveness |
 | `GET /openapi.json` | public deterministic OpenAPI 3.1 document |
 | `GET /docs/` | public Rust-built documentation website embedded in the binary |
 
-State is intentionally in memory in this slice and is lost on restart.
+State and task execution are intentionally process-local in this slice and are lost on restart.
+Production Identity and Connector custody are external services; model credentials are redeemed by
+Harness only at the provider request boundary.
 
 ## Development
 
