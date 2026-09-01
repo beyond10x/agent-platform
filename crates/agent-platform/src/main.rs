@@ -65,6 +65,9 @@ struct ServeOptions {
     /// Synthetic or operator-owned Connector descriptions for the walking slice.
     #[arg(long)]
     connector_catalog: Option<PathBuf>,
+    /// Credential-free durable state snapshot. Omit only for disposable development processes.
+    #[arg(long)]
+    state_path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -141,7 +144,11 @@ async fn serve(options: &ServeOptions) -> Result<(), Box<dyn Error>> {
         .as_deref()
         .map_or_else(|| Ok(Vec::new()), read_catalog)?;
     let catalog = Arc::new(InMemoryCatalog::new(descriptions));
-    let app = Application::new(catalog);
+    let app = if let Some(path) = &options.state_path {
+        Application::open(catalog, path, now_ms())?
+    } else {
+        Application::new(catalog)
+    };
     let mut http_state = HttpState::new(app, verifier);
     if connectors_api_base.is_some() {
         http_state = http_state.with_runner(UserModelRunner::new(
@@ -158,6 +165,14 @@ async fn serve(options: &ServeOptions) -> Result<(), Box<dyn Error>> {
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn read_catalog(path: &Path) -> Result<Vec<OperationDescription>, Box<dyn Error>> {

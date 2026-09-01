@@ -4,15 +4,16 @@ use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_platform_api::{
-    ACTIVATE_PATH, AGENT_PATH, AGENTS_PATH, CAPABILITY_PROFILES_PATH, DOCS_API_PATH,
-    DOCS_INDEX_PATH, DOCS_ROOT_PATH, DOCS_STYLES_PATH, LIVENESS_PATH, OPENAPI_PATH,
+    ACTIVATE_PATH, AGENT_PATH, AGENTS_PATH, CAPABILITY_PROFILE_PATH, CAPABILITY_PROFILES_PATH,
+    DOCS_API_PATH, DOCS_INDEX_PATH, DOCS_ROOT_PATH, DOCS_STYLES_PATH, LIVENESS_PATH, OPENAPI_PATH,
     ProblemDocument, REVISIONS_PATH, TASK_EVENTS_PATH, TASK_PATH, TASKS_PATH, TRIGGERS_PATH,
 };
 use agent_platform_app::{Application, ApplicationError, TaskExecutionPlan, TrustedRequestContext};
 use agent_platform_auth::{CredentialVerifier, UserModelLease};
 use agent_platform_core::{
-    ActivateRevision, AgentId, AttemptId, CreateAgent, CreateCapabilityProfile, CreateTrigger,
-    RequestId, RevisionSpec, SubmitTask, TaskEventKind, TaskFailure, TaskId,
+    ActivateRevision, AgentId, AttemptId, CapabilityProfileId, CreateAgent,
+    CreateCapabilityProfile, CreateTrigger, RequestId, RevisionSpec, SubmitTask, TaskEventKind,
+    TaskFailure, TaskId, UpdateCapabilityProfile,
 };
 use agent_platform_harness::UserModelRunner;
 use axum::body::{Body, Bytes};
@@ -21,7 +22,7 @@ use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use uuid::Uuid;
@@ -69,6 +70,7 @@ pub fn router(state: HttpState) -> Router {
             CAPABILITY_PROFILES_PATH,
             get(list_capability_profiles).post(create_capability_profile),
         )
+        .route(CAPABILITY_PROFILE_PATH, patch(update_capability_profile))
         .route(TASKS_PATH, get(list_tasks).post(submit_task))
         .route(TASK_PATH, get(get_task))
         .route(TASK_EVENTS_PATH, get(stream_task_events))
@@ -318,6 +320,25 @@ async fn list_capability_profiles(
     result(StatusCode::OK, state.app.list_capability_profiles(&context))
 }
 
+async fn update_capability_profile(
+    State(state): State<HttpState>,
+    Extension(context): Extension<TrustedRequestContext>,
+    Path(profile_id): Path<String>,
+    Json(request): Json<UpdateCapabilityProfile>,
+) -> Response {
+    let profile_id = match CapabilityProfileId::new(profile_id) {
+        Ok(profile_id) => profile_id,
+        Err(error) => return application_error(&ApplicationError::Invalid(error)),
+    };
+    result(
+        StatusCode::OK,
+        state
+            .app
+            .update_capability_profile(&context, &profile_id, request)
+            .await,
+    )
+}
+
 async fn submit_task(
     State(state): State<HttpState>,
     Extension(context): Extension<TrustedRequestContext>,
@@ -464,7 +485,7 @@ fn spawn_execution(
                     &attempt_id,
                     now_ms(),
                     TaskFailure {
-                        code: "execution_failed".to_owned(),
+                        code: error.code().to_owned(),
                         message: error.to_string(),
                     },
                 );
@@ -517,14 +538,18 @@ fn application_error(error: &ApplicationError) -> Response {
         | ApplicationError::RevisionNotFound
         | ApplicationError::CapabilityProfileNotFound
         | ApplicationError::TaskNotFound => (StatusCode::NOT_FOUND, "not_found"),
-        ApplicationError::ActiveRevisionConflict { .. } | ApplicationError::IdempotencyConflict => {
-            (StatusCode::CONFLICT, "conflict")
-        }
+        ApplicationError::ActiveRevisionConflict { .. }
+        | ApplicationError::CapabilityProfileRevisionConflict { .. }
+        | ApplicationError::IdempotencyConflict => (StatusCode::CONFLICT, "conflict"),
         ApplicationError::NoActiveRevision | ApplicationError::Invalid(_) => {
             (StatusCode::UNPROCESSABLE_ENTITY, "invalid_request")
         }
         ApplicationError::Projection(_) => (StatusCode::UNPROCESSABLE_ENTITY, "capability_refused"),
         ApplicationError::StateUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        ApplicationError::StatePersistence => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "state_persistence_unavailable",
+        ),
     };
     problem(status, code, &error.to_string())
 }
@@ -619,10 +644,12 @@ mod tests {
             let path = route
                 .path
                 .replace("{agent_id}", "agent-one")
+                .replace("{profile_id}", "profile-one")
                 .replace("{task_id}", "task-one");
             let method = match route.method {
                 ApiMethod::Get => Method::GET,
                 ApiMethod::Post => Method::POST,
+                ApiMethod::Patch => Method::PATCH,
             };
             let response = service()
                 .oneshot(request(method, &path, "not json", None))

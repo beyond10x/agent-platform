@@ -158,6 +158,22 @@ pub struct CapabilityMapping {
     pub connection_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    /// User-selected posture inside the current server-derived authority ceiling.
+    #[serde(default)]
+    pub posture: CapabilityPosture,
+}
+
+/// Effective user posture for one mapped capability.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityPosture {
+    /// Expose the capability while preserving any stronger upstream approval requirement.
+    #[default]
+    Allow,
+    /// Expose the capability but require a human approval before invocation.
+    ApprovalRequired,
+    /// Keep the capability visible in the profile but omit it from the executable toolset.
+    Deny,
 }
 
 impl CapabilityMapping {
@@ -181,6 +197,15 @@ pub struct CreateCapabilityProfile {
     pub mappings: Vec<CapabilityMapping>,
 }
 
+/// Compare-and-swap replacement for one immutable capability-profile revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateCapabilityProfile {
+    pub expected_revision: u64,
+    pub name: String,
+    pub mappings: Vec<CapabilityMapping>,
+}
+
 impl CreateCapabilityProfile {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_text("capability profile name", &self.name, MAX_NAME_BYTES)?;
@@ -193,6 +218,16 @@ impl CreateCapabilityProfile {
         self.mappings
             .iter()
             .try_for_each(CapabilityMapping::validate)
+    }
+}
+
+impl UpdateCapabilityProfile {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        CreateCapabilityProfile {
+            name: self.name.clone(),
+            mappings: self.mappings.clone(),
+        }
+        .validate()
     }
 }
 

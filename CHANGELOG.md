@@ -4,6 +4,15 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-02
+
+- Added credential-free durable state snapshots and explicit restart recovery for agents,
+  revisions, capability profiles, tasks, evidence and triggers through `--state-path`.
+- Added compare-and-swap capability-profile updates with per-capability `allow`,
+  `approval_required` and `deny` posture.
+- Preserved model-provider failure classes as stable task failure codes so credential,
+  availability, rate-limit and policy failures are no longer collapsed into one error.
+
 ## [0.3.1] — 2026-09-01
 
 - Added the pinned, non-root OCI build used for private Kubernetes deployments. Private source

@@ -9,6 +9,7 @@ pub const AGENT_PATH: &str = "/v1/agents/{agent_id}";
 pub const REVISIONS_PATH: &str = "/v1/agents/{agent_id}/revisions";
 pub const ACTIVATE_PATH: &str = "/v1/agents/{agent_id}/activate";
 pub const CAPABILITY_PROFILES_PATH: &str = "/v1/capability-profiles";
+pub const CAPABILITY_PROFILE_PATH: &str = "/v1/capability-profiles/{profile_id}";
 pub const TASKS_PATH: &str = "/v1/tasks";
 pub const TASK_PATH: &str = "/v1/tasks/{task_id}";
 pub const TASK_EVENTS_PATH: &str = "/v1/tasks/{task_id}/events";
@@ -23,6 +24,7 @@ pub const DOCS_STYLES_PATH: &str = "/docs/styles.css";
 pub enum Method {
     Get,
     Post,
+    Patch,
 }
 
 impl Method {
@@ -30,6 +32,7 @@ impl Method {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
+            Self::Patch => "PATCH",
         }
     }
 }
@@ -45,6 +48,7 @@ pub enum Operation {
     ActivateRevision,
     ListCapabilityProfiles,
     CreateCapabilityProfile,
+    UpdateCapabilityProfile,
     ListTasks,
     SubmitTask,
     GetTask,
@@ -65,6 +69,7 @@ impl Operation {
             Self::ActivateRevision => "activateAgentRevision",
             Self::ListCapabilityProfiles => "listCapabilityProfiles",
             Self::CreateCapabilityProfile => "createCapabilityProfile",
+            Self::UpdateCapabilityProfile => "updateCapabilityProfile",
             Self::ListTasks => "listTasks",
             Self::SubmitTask => "submitTask",
             Self::GetTask => "getTask",
@@ -85,6 +90,7 @@ impl Operation {
             Self::ActivateRevision => "Activate an agent revision with compare-and-swap",
             Self::ListCapabilityProfiles => "List capability profiles",
             Self::CreateCapabilityProfile => "Compile a Connector capability profile",
+            Self::UpdateCapabilityProfile => "Replace a capability profile with compare-and-swap",
             Self::ListTasks => "List admitted tasks",
             Self::SubmitTask => "Idempotently admit an asynchronous task",
             Self::GetTask => "Get task state",
@@ -167,6 +173,13 @@ pub const ROUTES: &[RouteSpec] = &[
         operation: Operation::CreateCapabilityProfile,
         authenticated: true,
         success_status: 201,
+    },
+    RouteSpec {
+        method: Method::Patch,
+        path: CAPABILITY_PROFILE_PATH,
+        operation: Operation::UpdateCapabilityProfile,
+        authenticated: true,
+        success_status: 200,
     },
     RouteSpec {
         method: Method::Get,

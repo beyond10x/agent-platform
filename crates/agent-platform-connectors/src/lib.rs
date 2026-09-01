@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 
-use agent_platform_core::{CapabilityMapping, TenantId};
+use agent_platform_core::{CapabilityMapping, CapabilityPosture, TenantId};
 use harness_wire::{AccessKind, Approval, Effect, Envelope, Idempotency, Risk, ToolName, ToolSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -246,6 +246,7 @@ pub async fn compile(
         }
         if operation.effect != EffectClass::ReadOnly
             && operation.approval != ApprovalPosture::Required
+            && mapping.posture == CapabilityPosture::Allow
         {
             return Err(ProjectionError::UnsafeApproval {
                 operation_ref: operation.operation_ref,
@@ -259,9 +260,12 @@ pub async fn compile(
             |context| format!("{}\n\nAgent context: {context}", operation.description),
         );
         let envelope = envelope(operation.effect);
-        let approval = match operation.approval {
-            ApprovalPosture::NotRequired => Approval::NotRequired,
-            ApprovalPosture::Required => Approval::Required,
+        let approval = match (mapping.posture, operation.approval) {
+            (CapabilityPosture::ApprovalRequired, _) | (_, ApprovalPosture::Required) => {
+                Approval::Required
+            }
+            (CapabilityPosture::Allow, ApprovalPosture::NotRequired) => Approval::NotRequired,
+            (CapabilityPosture::Deny, _) => continue,
         };
         let tool = ToolSpec {
             name: tool_name,
@@ -384,6 +388,7 @@ mod tests {
             tool_name: "create_support_ticket".to_owned(),
             connection_ref: None,
             context: Some("Use only after troubleshooting is complete.".to_owned()),
+            posture: CapabilityPosture::Allow,
         }
     }
 

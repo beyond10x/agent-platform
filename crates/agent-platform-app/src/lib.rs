@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_platform_auth::{
@@ -11,7 +13,8 @@ use agent_platform_connectors::{CompiledToolset, ConnectorCatalog, ProjectionErr
 use agent_platform_core::{
     ActivateRevision, Agent, AgentId, AgentRevision, AttemptId, CapabilityProfileId, CreateAgent,
     CreateCapabilityProfile, CreateTrigger, RequestId, RevisionSpec, SubmitTask, Task, TaskEvent,
-    TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId, ValidationError,
+    TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId,
+    UpdateCapabilityProfile, ValidationError,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -61,10 +64,14 @@ pub struct CapabilityProfile {
     pub id: CapabilityProfileId,
     pub tenant_id: TenantId,
     pub name: String,
+    #[serde(default = "initial_profile_revision")]
+    pub revision: u64,
     pub mappings: Vec<agent_platform_core::CapabilityMapping>,
     pub compiled: CompiledToolset,
     pub created_by: agent_platform_core::SubjectId,
     pub created_at_ms: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -104,22 +111,30 @@ pub enum ApplicationError {
         expected: Option<u64>,
         actual: Option<u64>,
     },
+    #[error("capability profile revision changed; expected {expected}, found {actual}")]
+    CapabilityProfileRevisionConflict { expected: u64, actual: u64 },
     #[error("idempotency key was already used for different task intent")]
     IdempotencyConflict,
     #[error("application state lock is unavailable")]
     StateUnavailable,
+    #[error("durable application state is unavailable")]
+    StatePersistence,
     #[error(transparent)]
     Invalid(#[from] ValidationError),
     #[error(transparent)]
     Projection(#[from] ProjectionError),
 }
 
-#[derive(Debug, Default)]
+const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct State {
     tenants: BTreeMap<TenantId, TenantState>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TenantState {
     agents: BTreeMap<AgentId, Agent>,
     revisions: BTreeMap<AgentId, BTreeMap<u64, AgentRevision>>,
@@ -127,6 +142,7 @@ struct TenantState {
     tasks: BTreeMap<TaskId, Task>,
     task_keys: BTreeMap<String, TaskId>,
     task_events: BTreeMap<TaskId, Vec<TaskEvent>>,
+    #[serde(skip)]
     task_event_senders: BTreeMap<TaskId, broadcast::Sender<TaskEvent>>,
     triggers: BTreeMap<TriggerId, Trigger>,
 }
@@ -135,6 +151,7 @@ struct TenantState {
 pub struct Application {
     state: Arc<Mutex<State>>,
     catalog: Arc<dyn ConnectorCatalog>,
+    state_path: Option<Arc<PathBuf>>,
 }
 
 impl std::fmt::Debug for Application {
@@ -143,6 +160,7 @@ impl std::fmt::Debug for Application {
             .debug_struct("Application")
             .field("state", &"tenant-scoped")
             .field("catalog", &"ConnectorCatalog")
+            .field("durable", &self.state_path.is_some())
             .finish()
     }
 }
@@ -152,7 +170,26 @@ impl Application {
         Self {
             state: Arc::new(Mutex::new(State::default())),
             catalog,
+            state_path: None,
         }
+    }
+
+    /// Open credential-free durable state and recover interrupted attempts as failed evidence.
+    pub fn open(
+        catalog: Arc<dyn ConnectorCatalog>,
+        path: impl Into<PathBuf>,
+        recovered_at_ms: u64,
+    ) -> Result<Self, ApplicationError> {
+        let path = path.into();
+        let mut state = read_state(&path)?;
+        rebuild_task_senders(&mut state);
+        recover_interrupted_tasks(&mut state, recovered_at_ms)?;
+        persist_state(&state, &path)?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(state)),
+            catalog,
+            state_path: Some(Arc::new(path)),
+        })
     }
 
     pub fn create_agent(
@@ -178,6 +215,7 @@ impl Application {
             .or_default()
             .agents
             .insert(agent.id.clone(), agent.clone());
+        self.persist(&state)?;
         Ok(agent)
     }
 
@@ -243,6 +281,7 @@ impl Application {
             .entry(agent_id.clone())
             .or_default()
             .insert(revision.revision, revision.clone());
+        self.persist(&state)?;
         Ok(revision)
     }
 
@@ -290,7 +329,9 @@ impl Application {
             });
         }
         agent.active_revision = Some(request.revision);
-        Ok(agent.clone())
+        let agent = agent.clone();
+        self.persist(&state)?;
+        Ok(agent)
     }
 
     pub async fn create_capability_profile(
@@ -310,10 +351,12 @@ impl Application {
             id: new_profile_id()?,
             tenant_id: context.authority.tenant_id().clone(),
             name: request.name,
+            revision: 1,
             mappings: request.mappings,
             compiled,
             created_by: context.authority.authority().clone(),
             created_at_ms: context.received_at_ms,
+            updated_at_ms: context.received_at_ms,
         };
         let mut state = self.lock_state()?;
         state
@@ -322,6 +365,46 @@ impl Application {
             .or_default()
             .profiles
             .insert(profile.id.clone(), profile.clone());
+        self.persist(&state)?;
+        Ok(profile)
+    }
+
+    pub async fn update_capability_profile(
+        &self,
+        context: &TrustedRequestContext,
+        profile_id: &CapabilityProfileId,
+        request: UpdateCapabilityProfile,
+    ) -> Result<CapabilityProfile, ApplicationError> {
+        context.require(CAPABILITIES_MANAGE)?;
+        request.validate()?;
+        let compiled = compile(
+            self.catalog.as_ref(),
+            context.authority.tenant_id(),
+            &request.mappings,
+        )
+        .await?;
+        let mut state = self.lock_state()?;
+        let tenant = tenant_mut(&mut state, context);
+        let profile = tenant
+            .profiles
+            .get_mut(profile_id)
+            .ok_or(ApplicationError::CapabilityProfileNotFound)?;
+        if profile.revision != request.expected_revision {
+            return Err(ApplicationError::CapabilityProfileRevisionConflict {
+                expected: request.expected_revision,
+                actual: profile.revision,
+            });
+        }
+        profile.revision = profile
+            .revision
+            .checked_add(1)
+            .ok_or(ApplicationError::StateUnavailable)?;
+        profile.name = request.name;
+        profile.mappings = request.mappings;
+        profile.compiled = compiled;
+        profile.updated_at_ms = context.received_at_ms;
+        let profile = profile.clone();
+        self.persist(&state)?;
         Ok(profile)
     }
 
@@ -437,6 +520,7 @@ impl Application {
         let (sender, _) = broadcast::channel(256);
         let _ = sender.send(event);
         tenant.task_event_senders.insert(task.id.clone(), sender);
+        self.persist(&state)?;
         Ok(TaskAdmission {
             plan: TaskExecutionPlan {
                 task,
@@ -555,7 +639,8 @@ impl Application {
             attempt_id,
             at_ms,
             TaskEventKind::TextDelta { text },
-        )
+        )?;
+        self.persist(&state)
     }
 
     pub fn succeed_task(
@@ -632,7 +717,8 @@ impl Application {
         if matches!(status, TaskStatus::Succeeded | TaskStatus::Failed) {
             task.completed_at_ms = Some(at_ms);
         }
-        append_event(tenant, task_id, attempt_id, at_ms, event)
+        append_event(tenant, task_id, attempt_id, at_ms, event)?;
+        self.persist(&state)
     }
 
     pub fn create_trigger(
@@ -665,6 +751,7 @@ impl Application {
             created_at_ms: context.received_at_ms,
         };
         tenant.triggers.insert(trigger.id.clone(), trigger.clone());
+        self.persist(&state)?;
         Ok(trigger)
     }
 
@@ -687,6 +774,102 @@ impl Application {
             .lock()
             .map_err(|_| ApplicationError::StateUnavailable)
     }
+
+    fn persist(&self, state: &State) -> Result<(), ApplicationError> {
+        self.state_path
+            .as_deref()
+            .map_or(Ok(()), |path| persist_state(state, path))
+    }
+}
+
+fn read_state(path: &Path) -> Result<State, ApplicationError> {
+    if !path.exists() {
+        return Ok(State::default());
+    }
+    let metadata = std::fs::metadata(path).map_err(|_| ApplicationError::StatePersistence)?;
+    if !metadata.is_file() || metadata.len() > MAX_STATE_BYTES {
+        return Err(ApplicationError::StatePersistence);
+    }
+    let bytes = std::fs::read(path).map_err(|_| ApplicationError::StatePersistence)?;
+    serde_json::from_slice(&bytes).map_err(|_| ApplicationError::StatePersistence)
+}
+
+fn persist_state(state: &State, path: &Path) -> Result<(), ApplicationError> {
+    let bytes = serde_json::to_vec(state).map_err(|_| ApplicationError::StatePersistence)?;
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        return Err(ApplicationError::StatePersistence);
+    }
+    let parent = path.parent().ok_or(ApplicationError::StatePersistence)?;
+    std::fs::create_dir_all(parent).map_err(|_| ApplicationError::StatePersistence)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(ApplicationError::StatePersistence)?;
+    let temporary = parent.join(format!(".{file_name}.new"));
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|_| ApplicationError::StatePersistence)?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| ApplicationError::StatePersistence)?;
+    std::fs::rename(&temporary, path).map_err(|_| ApplicationError::StatePersistence)
+}
+
+fn rebuild_task_senders(state: &mut State) {
+    for tenant in state.tenants.values_mut() {
+        for task_id in tenant.tasks.keys() {
+            let (sender, _) = broadcast::channel(256);
+            tenant.task_event_senders.insert(task_id.clone(), sender);
+        }
+    }
+}
+
+fn recover_interrupted_tasks(
+    state: &mut State,
+    recovered_at_ms: u64,
+) -> Result<(), ApplicationError> {
+    for tenant in state.tenants.values_mut() {
+        let interrupted = tenant
+            .tasks
+            .values()
+            .filter(|task| {
+                matches!(
+                    task.status,
+                    TaskStatus::Accepted | TaskStatus::Running | TaskStatus::AwaitingApproval
+                )
+            })
+            .map(|task| (task.id.clone(), task.attempt_id.clone()))
+            .collect::<Vec<_>>();
+        for (task_id, attempt_id) in interrupted {
+            let failure = TaskFailure {
+                code: "execution_interrupted".to_owned(),
+                message: "the service restarted before the attempt reached a terminal state"
+                    .to_owned(),
+            };
+            let task = tenant
+                .tasks
+                .get_mut(&task_id)
+                .ok_or(ApplicationError::TaskNotFound)?;
+            task.status = TaskStatus::Failed;
+            task.failure = Some(failure.clone());
+            task.completed_at_ms = Some(recovered_at_ms);
+            append_event(
+                tenant,
+                &task_id,
+                &attempt_id,
+                recovered_at_ms,
+                TaskEventKind::Failed { failure },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn tenant<'a>(state: &'a State, context: &TrustedRequestContext) -> Option<&'a TenantState> {
@@ -706,6 +889,10 @@ fn new_agent_id() -> Result<AgentId, ApplicationError> {
 
 fn new_profile_id() -> Result<CapabilityProfileId, ApplicationError> {
     CapabilityProfileId::new(format!("cap_{}", Uuid::now_v7().simple())).map_err(Into::into)
+}
+
+const fn initial_profile_revision() -> u64 {
+    1
 }
 
 fn new_task_id() -> Result<TaskId, ApplicationError> {
@@ -769,8 +956,11 @@ mod tests {
         AGENTS_MANAGE, AGENTS_READ, CAPABILITIES_MANAGE, CAPABILITIES_READ, TASKS_READ,
         TASKS_SUBMIT, TRIGGERS_MANAGE, TRIGGERS_READ,
     };
-    use agent_platform_connectors::EmptyCatalog;
-    use agent_platform_core::{SubjectId, TenantId};
+    use agent_platform_connectors::{
+        ApprovalPosture, ConnectionSummary, EffectClass, EmptyCatalog, InMemoryCatalog,
+        OperationDescription,
+    };
+    use agent_platform_core::{CapabilityMapping, CapabilityPosture, SubjectId, TenantId};
 
     fn context(tenant: &str, at: u64) -> TrustedRequestContext {
         let scopes = [
@@ -968,5 +1158,117 @@ mod tests {
             app.mark_task_running(&task.tenant_id, &task.id, &wrong_attempt, 99),
             Err(ApplicationError::TaskNotFound)
         );
+    }
+
+    #[test]
+    fn durable_state_survives_restart_and_closes_interrupted_attempts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent-platform.json");
+        let context = context("tenant-one", 10);
+        let app = Application::open(Arc::new(EmptyCatalog), &path, 10).unwrap();
+        let (created_agent, _) = active_agent(&app, &context);
+        let agent = app.get_agent(&context, &created_agent.id).unwrap();
+        let task = app
+            .submit_task(
+                &context,
+                SubmitTask {
+                    agent_id: agent.id.clone(),
+                    idempotency_key: "durable-task".to_owned(),
+                    input: serde_json::json!({"prompt": "hello"}),
+                },
+            )
+            .unwrap();
+        app.mark_task_running(&task.tenant_id, &task.id, &task.attempt_id, 11)
+            .unwrap();
+        drop(app);
+
+        let reopened = Application::open(Arc::new(EmptyCatalog), &path, 20).unwrap();
+        assert_eq!(reopened.list_agents(&context).unwrap(), vec![agent]);
+        let recovered = reopened.get_task(&context, &task.id).unwrap();
+        assert_eq!(recovered.status, TaskStatus::Failed);
+        assert_eq!(recovered.failure.unwrap().code, "execution_interrupted");
+        assert_eq!(
+            reopened
+                .subscribe_task_events(&context, &task.id)
+                .unwrap()
+                .backlog
+                .last()
+                .unwrap()
+                .sequence,
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_profile_updates_are_compare_and_swap_and_change_posture() {
+        let catalog = Arc::new(InMemoryCatalog::new([OperationDescription {
+            operation_ref: "repository.read".to_owned(),
+            title: "Read repository".to_owned(),
+            description: "Read one repository file.".to_owned(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({"type": "object"}),
+            effect: EffectClass::ReadOnly,
+            approval: ApprovalPosture::NotRequired,
+            connections: vec![ConnectionSummary {
+                connection_ref: "connection-project".to_owned(),
+                label: "Project".to_owned(),
+                provider: "workspace".to_owned(),
+                audiences: Vec::new(),
+                purpose: None,
+            }],
+            description_ref: "description-project-read".to_owned(),
+        }]));
+        let app = Application::new(catalog);
+        let context = context("tenant-one", 10);
+        let mapping = |posture| CapabilityMapping {
+            operation_ref: "repository.read".to_owned(),
+            tool_name: "repository_read".to_owned(),
+            connection_ref: Some("connection-project".to_owned()),
+            context: None,
+            posture,
+        };
+        let profile = app
+            .create_capability_profile(
+                &context,
+                CreateCapabilityProfile {
+                    name: "Project".to_owned(),
+                    mappings: vec![mapping(CapabilityPosture::Allow)],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(profile.revision, 1);
+        assert_eq!(profile.compiled.capabilities.len(), 1);
+
+        let updated = app
+            .update_capability_profile(
+                &context,
+                &profile.id,
+                UpdateCapabilityProfile {
+                    expected_revision: 1,
+                    name: "Project".to_owned(),
+                    mappings: vec![mapping(CapabilityPosture::Deny)],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.revision, 2);
+        assert!(updated.compiled.capabilities.is_empty());
+        assert!(matches!(
+            app.update_capability_profile(
+                &context,
+                &profile.id,
+                UpdateCapabilityProfile {
+                    expected_revision: 1,
+                    name: "Stale".to_owned(),
+                    mappings: vec![mapping(CapabilityPosture::Allow)],
+                },
+            )
+            .await,
+            Err(ApplicationError::CapabilityProfileRevisionConflict {
+                expected: 1,
+                actual: 2
+            })
+        ));
     }
 }

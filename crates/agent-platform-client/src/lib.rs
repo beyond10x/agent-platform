@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 pub use agent_platform_core::{
-    ActivateRevision, Agent, AgentId, AgentRevision, CreateAgent, RevisionSpec, SubmitTask, Task,
-    TaskId,
+    ActivateRevision, Agent, AgentId, AgentRevision, CapabilityProfileId, CreateAgent,
+    CreateCapabilityProfile, RevisionSpec, SubmitTask, Task, TaskId, UpdateCapabilityProfile,
 };
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde::de::DeserializeOwned;
@@ -84,6 +84,36 @@ impl AgentPlatformClient {
             .await
     }
 
+    pub async fn list_capability_profiles(
+        &self,
+        bearer: &str,
+    ) -> Result<serde_json::Value, ClientError> {
+        self.get_json(bearer, "v1/capability-profiles").await
+    }
+
+    pub async fn create_capability_profile(
+        &self,
+        bearer: &str,
+        request: &CreateCapabilityProfile,
+    ) -> Result<serde_json::Value, ClientError> {
+        self.post_json(bearer, "v1/capability-profiles", request)
+            .await
+    }
+
+    pub async fn update_capability_profile(
+        &self,
+        bearer: &str,
+        profile_id: &CapabilityProfileId,
+        request: &UpdateCapabilityProfile,
+    ) -> Result<serde_json::Value, ClientError> {
+        self.patch_json(
+            bearer,
+            &format!("v1/capability-profiles/{profile_id}"),
+            request,
+        )
+        .await
+    }
+
     pub async fn submit_task(
         &self,
         bearer: &str,
@@ -136,6 +166,23 @@ impl AgentPlatformClient {
         let response = self
             .http
             .post(self.endpoint(path)?)
+            .header(AUTHORIZATION, authorization(bearer)?)
+            .json(body)
+            .send()
+            .await
+            .map_err(ClientError::Transport)?;
+        decode(response).await
+    }
+
+    async fn patch_json<T: DeserializeOwned>(
+        &self,
+        bearer: &str,
+        path: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<T, ClientError> {
+        let response = self
+            .http
+            .patch(self.endpoint(path)?)
             .header(AUTHORIZATION, authorization(bearer)?)
             .json(body)
             .send()
