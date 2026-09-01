@@ -16,4 +16,4 @@ surfaces:
     capabilities: [agent-management, capability-projection, task-admission]
     sections: []
     accent: "#b7e36b"
-    shell: {integration: portable, revision: 6323bfdaf73609247e8dabcc9df410ab280a1960}
+    shell: {integration: portable, revision: 0cbd1f1b6951fec95767332e3a1792f838feb62d}
