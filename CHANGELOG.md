@@ -4,6 +4,11 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-09-02
+
+- Bound the runtime image to a repository-owned package identity so release jobs do not depend on
+  mutable access inherited from the legacy package.
+
 ## [0.4.1] — 2026-09-02
 
 - Added a tag-gated, default-branch-bound multi-architecture release pipeline that publishes,
