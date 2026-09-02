@@ -14,9 +14,9 @@ use agent_platform_api::{
 use agent_platform_app::{Application, ApplicationError, TaskExecutionPlan, TrustedRequestContext};
 use agent_platform_auth::{AttemptConnectorAccess, CredentialVerifier, UserModelLease, operation};
 use agent_platform_core::{
-    ActivateRevision, AgentId, ApprovalId, AttemptId, CapabilityProfileId, CreateAgent,
-    CreateCapabilityProfile, CreateTrigger, PendingApproval, RequestId, ResolveApproval,
-    RevisionSpec, SubmitTask, TaskEventKind, TaskFailure, TaskId, TenantId,
+    ActivateRevision, AgentId, ApprovalId, AttemptId, CapabilityProfileId, ConnectorOwnerContext,
+    CreateAgent, CreateCapabilityProfile, CreateTrigger, PendingApproval, RequestId,
+    ResolveApproval, RevisionSpec, SubmitTask, TaskEventKind, TaskFailure, TaskId, TenantId,
     UpdateCapabilityProfile,
 };
 use agent_platform_harness::{
@@ -178,6 +178,7 @@ struct AttemptApprover {
     tenant_id: TenantId,
     task_id: TaskId,
     attempt_id: AttemptId,
+    context: ConnectorOwnerContext,
     targets: BTreeMap<String, ApprovalTarget>,
 }
 
@@ -205,6 +206,7 @@ impl ApprovalPort for AttemptApprover {
             connection_ref: target.connection.clone(),
             description_ref: target.description,
             input: call.arguments.clone(),
+            context: self.context.clone(),
             requested_at_ms,
         };
         let resolution = self.registry.publish_and_wait(pending.clone(), || {
@@ -741,6 +743,13 @@ fn spawn_execution(
                 })
                 .collect()
         });
+        let approval_context = ConnectorOwnerContext {
+            tenant_id: tenant_id.clone(),
+            agent_id: plan.task.agent_id.clone(),
+            agent_revision: plan.task.agent_revision,
+            authority_snapshot_id: plan.task.request_id.clone(),
+            authority_snapshot_sha256: authority_snapshot_sha256(&plan),
+        };
         let approver = AttemptApprover {
             app: app.clone(),
             registry: approvals,
@@ -748,14 +757,15 @@ fn spawn_execution(
             tenant_id: tenant_id.clone(),
             task_id: task_id.clone(),
             attempt_id: attempt_id.clone(),
+            context: approval_context.clone(),
             targets,
         };
         let connector_context = operation::OwnerContext {
-            tenant_id: tenant_id.as_str().to_owned(),
-            agent_id: plan.task.agent_id.as_str().to_owned(),
-            agent_revision: plan.task.agent_revision,
-            authority_snapshot_id: plan.task.request_id.as_str().to_owned(),
-            authority_snapshot_sha256: authority_snapshot_sha256(&plan),
+            tenant_id: approval_context.tenant_id.to_string(),
+            agent_id: approval_context.agent_id.to_string(),
+            agent_revision: approval_context.agent_revision,
+            authority_snapshot_id: approval_context.authority_snapshot_id.to_string(),
+            authority_snapshot_sha256: approval_context.authority_snapshot_sha256,
         };
         match runner
             .execute(
@@ -1091,6 +1101,13 @@ mod tests {
             connection_ref: "todo".to_owned(),
             description_ref: "description-one".to_owned(),
             input: json!({"list_id": "list-one", "title": "Ship it"}),
+            context: ConnectorOwnerContext {
+                tenant_id: TenantId::new("tenant-one").unwrap(),
+                agent_id: AgentId::new("agent-one").unwrap(),
+                agent_revision: 1,
+                authority_snapshot_id: RequestId::new("request-one").unwrap(),
+                authority_snapshot_sha256: "a".repeat(64),
+            },
             requested_at_ms: 42,
         };
         let (published_tx, published_rx) = std::sync::mpsc::channel();

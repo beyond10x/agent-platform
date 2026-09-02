@@ -445,6 +445,17 @@ pub struct TaskFailure {
     pub message: String,
 }
 
+/// Non-secret owner snapshot shared by one invocation and its human approval request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorOwnerContext {
+    pub tenant_id: TenantId,
+    pub agent_id: AgentId,
+    pub agent_revision: u64,
+    pub authority_snapshot_id: RequestId,
+    pub authority_snapshot_sha256: String,
+}
+
 /// Exact effectful Connector call suspended for a human decision.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -458,6 +469,7 @@ pub struct PendingApproval {
     pub connection_ref: String,
     pub description_ref: String,
     pub input: Value,
+    pub context: ConnectorOwnerContext,
     pub requested_at_ms: u64,
 }
 
