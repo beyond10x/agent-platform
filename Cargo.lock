@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-platform"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-app",
  "agent-platform-auth",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-api"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "schemars 0.8.22",
  "serde",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-app"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-auth",
  "agent-platform-connectors",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-auth"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-core",
  "axum",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-client"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-core",
  "reqwest 0.13.4",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-connectors"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-core",
  "b10x-harness-wire",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "schemars 0.8.22",
  "serde",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-docs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-api",
  "agent-platform-openapi",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-harness"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-auth",
  "agent-platform-connectors",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-http"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-api",
  "agent-platform-app",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "agent-platform-openapi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-platform-api",
  "agent-platform-app",

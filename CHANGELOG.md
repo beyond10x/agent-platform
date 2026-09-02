@@ -4,6 +4,15 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-02
+
+- Execute generated Connector tool calls with a separate attempt-bound invoke credential, suspend
+  exact calls that require human approval, and resume them only with task-, attempt-, call-, and
+  input-bound single-use evidence.
+- Expose authenticated pending-approval and resolution APIs carrying the immutable, non-secret
+  Connector owner context required for Devcenter to issue the proof without trusting browser
+  coordinates.
+
 ## [0.5.0] — 2026-09-02
 
 - Capability-profile creation and compare-and-swap updates can compile an exact credential-free

@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const EXPECTED_OPENAPI_SHA256: &str =
-    "9d590a6ec2805d9c49a1ffaa7182cebea410944dc32a47ac2d35ddc4afa30a23";
+    "78efdf3165cb9a76ce789096a0052ef44495e949035604757b6f6195a2a77bc1";
 
 /// Builds the complete `OpenAPI` document as a deterministic JSON value.
 ///
