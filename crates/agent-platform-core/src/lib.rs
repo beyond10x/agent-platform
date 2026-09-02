@@ -191,6 +191,20 @@ pub enum CapabilityPosture {
     Deny,
 }
 
+/// Who may discover and bind one capability profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityProfileAudience {
+    /// Only the verified principal who created the profile.
+    Personal,
+    /// Every admitted member of the tenant; typically an operator-authored template.
+    Tenant,
+}
+
+const fn default_personal_profile_audience() -> CapabilityProfileAudience {
+    CapabilityProfileAudience::Personal
+}
+
 /// Connector-reported effect classification captured under the caller's current authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -278,6 +292,9 @@ impl CapabilityMapping {
 #[serde(deny_unknown_fields)]
 pub struct CreateCapabilityProfile {
     pub name: String,
+    /// Personal by default. Tenant profiles are explicit shared templates.
+    #[serde(default = "default_personal_profile_audience")]
+    pub audience: CapabilityProfileAudience,
     pub mappings: Vec<CapabilityMapping>,
     /// Exact credential-free Connector descriptions observed for this profile revision.
     #[serde(default)]
@@ -318,6 +335,7 @@ impl UpdateCapabilityProfile {
     pub fn validate(&self) -> Result<(), ValidationError> {
         CreateCapabilityProfile {
             name: self.name.clone(),
+            audience: CapabilityProfileAudience::Personal,
             mappings: self.mappings.clone(),
             operation_descriptions: self.operation_descriptions.clone(),
         }

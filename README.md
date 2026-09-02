@@ -60,7 +60,7 @@ materialized.
 | `GET /v1/agents/{agent_id}` | read one tenant-owned agent |
 | `GET/POST /v1/agents/{agent_id}/revisions` | list or append immutable revisions |
 | `POST /v1/agents/{agent_id}/activate` | compare-and-swap the active revision |
-| `GET/POST /v1/capability-profiles` | list or compile Connector mappings into Harness tools |
+| `GET/POST /v1/capability-profiles` | list or compile personal profiles and shared tenant templates into Harness tools |
 | `PATCH /v1/capability-profiles/{profile_id}` | compare-and-swap capability posture changes |
 | `GET/POST /v1/tasks` | list or idempotently admit asynchronous work |
 | `GET /v1/tasks/{task_id}` | read pinned task state |
@@ -75,6 +75,10 @@ capability profiles, tasks, evidence and triggers survive restarts; work that wa
 terminated explicitly rather than silently resumed.
 Production Identity and Connector custody are external services; model credentials are redeemed by
 Harness only at the provider request boundary.
+
+New capability profiles default to `personal`: only their verified creator can list, edit, bind, or
+execute them. An explicit `tenant` audience creates a shared operator template. Profiles persisted
+before 0.6.0 retain their prior shared behavior and load as tenant templates.
 
 ## Development
 

@@ -13,10 +13,10 @@ use agent_platform_connectors::{
     CompiledToolset, ConnectorCatalog, InMemoryCatalog, ProjectionError, compile,
 };
 use agent_platform_core::{
-    ActivateRevision, Agent, AgentId, AgentRevision, AttemptId, CapabilityProfileId, CreateAgent,
-    CreateCapabilityProfile, CreateTrigger, PendingApproval, RequestId, RevisionSpec, SubmitTask,
-    Task, TaskEvent, TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId,
-    UpdateCapabilityProfile, ValidationError,
+    ActivateRevision, Agent, AgentId, AgentRevision, AttemptId, CapabilityProfileAudience,
+    CapabilityProfileId, CreateAgent, CreateCapabilityProfile, CreateTrigger, PendingApproval,
+    RequestId, RevisionSpec, SubmitTask, Task, TaskEvent, TaskEventKind, TaskFailure, TaskId,
+    TaskStatus, TenantId, Trigger, TriggerId, UpdateCapabilityProfile, ValidationError,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,8 @@ pub struct CapabilityProfile {
     pub id: CapabilityProfileId,
     pub tenant_id: TenantId,
     pub name: String,
+    #[serde(default = "legacy_tenant_profile_audience")]
+    pub audience: CapabilityProfileAudience,
     #[serde(default = "initial_profile_revision")]
     pub revision: u64,
     pub mappings: Vec<agent_platform_core::CapabilityMapping>,
@@ -257,7 +259,10 @@ impl Application {
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
         if let Some(profile_id) = &spec.capability_profile_id
-            && !tenant.profiles.contains_key(profile_id)
+            && !tenant
+                .profiles
+                .get(profile_id)
+                .is_some_and(|profile| profile_visible(profile, context))
         {
             return Err(ApplicationError::CapabilityProfileNotFound);
         }
@@ -354,6 +359,7 @@ impl Application {
             id: new_profile_id()?,
             tenant_id: context.authority.tenant_id().clone(),
             name: request.name,
+            audience: request.audience,
             revision: 1,
             mappings: request.mappings,
             compiled,
@@ -380,6 +386,15 @@ impl Application {
     ) -> Result<CapabilityProfile, ApplicationError> {
         context.require(CAPABILITIES_MANAGE)?;
         request.validate()?;
+        {
+            let state = self.lock_state()?;
+            let profile = tenant(&state, context)
+                .and_then(|tenant| tenant.profiles.get(profile_id))
+                .ok_or(ApplicationError::CapabilityProfileNotFound)?;
+            if !profile_visible(profile, context) {
+                return Err(ApplicationError::CapabilityProfileNotFound);
+            }
+        }
         let request_catalog = InMemoryCatalog::new(request.operation_descriptions.clone());
         let catalog: &dyn ConnectorCatalog = if request.operation_descriptions.is_empty() {
             self.catalog.as_ref()
@@ -393,6 +408,9 @@ impl Application {
             .profiles
             .get_mut(profile_id)
             .ok_or(ApplicationError::CapabilityProfileNotFound)?;
+        if !profile_visible(profile, context) {
+            return Err(ApplicationError::CapabilityProfileNotFound);
+        }
         if profile.revision != request.expected_revision {
             return Err(ApplicationError::CapabilityProfileRevisionConflict {
                 expected: request.expected_revision,
@@ -422,7 +440,12 @@ impl Application {
             .tenants
             .get(context.authority.tenant_id())
             .map_or_else(Vec::new, |tenant| {
-                tenant.profiles.values().cloned().collect()
+                tenant
+                    .profiles
+                    .values()
+                    .filter(|profile| profile_visible(profile, context))
+                    .cloned()
+                    .collect()
             }))
     }
 
@@ -449,6 +472,7 @@ impl Application {
             && let Some(task) = tenant.tasks.get(task_id)
         {
             if task.agent_id == request.agent_id && task.input == request.input {
+                require_visible_profile(tenant, task.capability_profile_id.as_ref(), context)?;
                 let revision = tenant
                     .revisions
                     .get(&task.agent_id)
@@ -482,6 +506,11 @@ impl Application {
             .get(&request.agent_id)
             .and_then(|revisions| revisions.get(&active_revision))
             .ok_or(ApplicationError::RevisionNotFound)?;
+        require_visible_profile(
+            tenant,
+            revision.spec.capability_profile_id.as_ref(),
+            context,
+        )?;
         let task = Task {
             id: new_task_id()?,
             tenant_id: context.authority.tenant_id().clone(),
@@ -946,6 +975,28 @@ fn tenant_mut<'a>(state: &'a mut State, context: &TrustedRequestContext) -> &'a 
         .or_default()
 }
 
+fn profile_visible(profile: &CapabilityProfile, context: &TrustedRequestContext) -> bool {
+    profile.audience == CapabilityProfileAudience::Tenant
+        || &profile.created_by == context.authority.authority()
+}
+
+fn require_visible_profile(
+    tenant: &TenantState,
+    profile_id: Option<&CapabilityProfileId>,
+    context: &TrustedRequestContext,
+) -> Result<(), ApplicationError> {
+    if profile_id.is_none_or(|id| {
+        tenant
+            .profiles
+            .get(id)
+            .is_some_and(|profile| profile_visible(profile, context))
+    }) {
+        Ok(())
+    } else {
+        Err(ApplicationError::CapabilityProfileNotFound)
+    }
+}
+
 fn new_agent_id() -> Result<AgentId, ApplicationError> {
     AgentId::new(format!("agt_{}", Uuid::now_v7().simple())).map_err(Into::into)
 }
@@ -956,6 +1007,10 @@ fn new_profile_id() -> Result<CapabilityProfileId, ApplicationError> {
 
 const fn initial_profile_revision() -> u64 {
     1
+}
+
+const fn legacy_tenant_profile_audience() -> CapabilityProfileAudience {
+    CapabilityProfileAudience::Tenant
 }
 
 fn new_task_id() -> Result<TaskId, ApplicationError> {
@@ -1022,9 +1077,15 @@ mod tests {
     use agent_platform_connectors::{
         ApprovalPosture, ConnectionSummary, EffectClass, EmptyCatalog, OperationDescription,
     };
-    use agent_platform_core::{CapabilityMapping, CapabilityPosture, SubjectId, TenantId};
+    use agent_platform_core::{
+        CapabilityMapping, CapabilityPosture, CapabilityProfileAudience, SubjectId, TenantId,
+    };
 
     fn context(tenant: &str, at: u64) -> TrustedRequestContext {
+        context_for(tenant, "human-alice", at)
+    }
+
+    fn context_for(tenant: &str, subject: &str, at: u64) -> TrustedRequestContext {
         let scopes = [
             AGENTS_MANAGE,
             AGENTS_READ,
@@ -1040,7 +1101,7 @@ mod tests {
         TrustedRequestContext::new(
             VerifiedAuthority::new(
                 TenantId::new(tenant).unwrap(),
-                SubjectId::new("human-alice").unwrap(),
+                SubjectId::new(subject).unwrap(),
                 None,
                 None,
                 scopes,
@@ -1294,6 +1355,7 @@ mod tests {
                 &context,
                 CreateCapabilityProfile {
                     name: "Project".to_owned(),
+                    audience: CapabilityProfileAudience::Personal,
                     mappings: vec![mapping(CapabilityPosture::Allow)],
                     operation_descriptions: vec![description.clone()],
                 },
@@ -1335,5 +1397,81 @@ mod tests {
                 actual: 2
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn personal_profiles_are_owner_scoped_and_tenant_templates_are_shared() {
+        let description = OperationDescription {
+            operation_ref: "repository.read".to_owned(),
+            title: "Read repository".to_owned(),
+            description: "Read one repository file.".to_owned(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({"type": "object"}),
+            effect: EffectClass::ReadOnly,
+            approval: ApprovalPosture::NotRequired,
+            connections: vec![ConnectionSummary {
+                connection_ref: "connection-project".to_owned(),
+                label: "Project".to_owned(),
+                provider: "workspace".to_owned(),
+                audiences: Vec::new(),
+                purpose: None,
+            }],
+            description_ref: "description-project-read".to_owned(),
+        };
+        let mapping = CapabilityMapping {
+            operation_ref: "repository.read".to_owned(),
+            tool_name: "repository_read".to_owned(),
+            connection_ref: Some("connection-project".to_owned()),
+            context: None,
+            posture: CapabilityPosture::Allow,
+        };
+        let app = Application::new(Arc::new(EmptyCatalog));
+        let alice = context_for("tenant-one", "human-alice", 10);
+        let bob = context_for("tenant-one", "human-bob", 11);
+        let personal = app
+            .create_capability_profile(
+                &alice,
+                CreateCapabilityProfile {
+                    name: "Alice's tools".to_owned(),
+                    audience: CapabilityProfileAudience::Personal,
+                    mappings: vec![mapping.clone()],
+                    operation_descriptions: vec![description.clone()],
+                },
+            )
+            .await
+            .unwrap();
+        let template = app
+            .create_capability_profile(
+                &alice,
+                CreateCapabilityProfile {
+                    name: "Engineering template".to_owned(),
+                    audience: CapabilityProfileAudience::Tenant,
+                    mappings: vec![mapping],
+                    operation_descriptions: vec![description],
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(app.list_capability_profiles(&alice).unwrap().len(), 2);
+        assert_eq!(
+            app.list_capability_profiles(&bob).unwrap(),
+            vec![template.clone()]
+        );
+        assert!(matches!(
+            app.update_capability_profile(
+                &bob,
+                &personal.id,
+                UpdateCapabilityProfile {
+                    expected_revision: 1,
+                    name: "Not Bob's".to_owned(),
+                    mappings: personal.mappings.clone(),
+                    operation_descriptions: Vec::new(),
+                },
+            )
+            .await,
+            Err(ApplicationError::CapabilityProfileNotFound)
+        ));
+        assert_eq!(template.audience, CapabilityProfileAudience::Tenant);
     }
 }

@@ -4,6 +4,15 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-03
+
+- Add explicit personal and tenant capability-profile audiences. Personal profiles are discoverable,
+  editable, bindable to agent revisions, and executable only by their creating principal; existing
+  persisted profiles remain tenant templates for backward compatibility.
+- Move the Identity and Connectors client boundaries to Identity 0.5.0 and Connectors 0.5.0 so the
+  execution plane consumes the released multi-provider authority and principal-owned connector
+  contracts.
+
 ## [0.5.4] — 2026-09-02
 
 - Bootstrap the repository-linked private `agent-platform-server` package with the organization
