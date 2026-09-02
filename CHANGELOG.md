@@ -4,6 +4,12 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-03
+
+- Scope task discovery, detail, approval, and event streams to the verified task owner, enabling
+  durable personal chat history without exposing another tenant member's prompts or outputs.
+- Expose typed task listing through the client used by product BFFs.
+
 ## [0.6.0] — 2026-09-03
 
 - Add explicit personal and tenant capability-profile audiences. Personal profiles are discoverable,

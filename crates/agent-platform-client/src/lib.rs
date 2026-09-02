@@ -137,6 +137,10 @@ impl AgentPlatformClient {
         self.post_json(bearer, "v1/tasks", request).await
     }
 
+    pub async fn list_tasks(&self, bearer: &str) -> Result<Vec<Task>, ClientError> {
+        self.get_json(bearer, "v1/tasks").await
+    }
+
     pub async fn get_task(&self, bearer: &str, task_id: &TaskId) -> Result<Task, ClientError> {
         self.get_json(bearer, &format!("v1/tasks/{task_id}")).await
     }

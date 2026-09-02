@@ -573,7 +573,14 @@ impl Application {
         Ok(state
             .tenants
             .get(context.authority.tenant_id())
-            .map_or_else(Vec::new, |tenant| tenant.tasks.values().cloned().collect()))
+            .map_or_else(Vec::new, |tenant| {
+                tenant
+                    .tasks
+                    .values()
+                    .filter(|task| task_owned_by(task, context))
+                    .cloned()
+                    .collect()
+            }))
     }
 
     pub fn get_task(
@@ -585,6 +592,7 @@ impl Application {
         let state = self.lock_state()?;
         tenant(&state, context)
             .and_then(|tenant| tenant.tasks.get(task_id))
+            .filter(|task| task_owned_by(task, context))
             .cloned()
             .ok_or(ApplicationError::TaskNotFound)
     }
@@ -598,6 +606,7 @@ impl Application {
         let state = self.lock_state()?;
         tenant(&state, context)
             .and_then(|tenant| tenant.tasks.get(task_id))
+            .filter(|task| task_owned_by(task, context))
             .cloned()
             .ok_or(ApplicationError::TaskNotFound)
     }
@@ -610,7 +619,11 @@ impl Application {
         context.require(TASKS_READ)?;
         let state = self.lock_state()?;
         let tenant = tenant(&state, context).ok_or(ApplicationError::TaskNotFound)?;
-        if !tenant.tasks.contains_key(task_id) {
+        if !tenant
+            .tasks
+            .get(task_id)
+            .is_some_and(|task| task_owned_by(task, context))
+        {
             return Err(ApplicationError::TaskNotFound);
         }
         let backlog = tenant.task_events.get(task_id).cloned().unwrap_or_default();
@@ -631,7 +644,11 @@ impl Application {
         context.require(TASKS_READ)?;
         let state = self.lock_state()?;
         let tenant = tenant(&state, context).ok_or(ApplicationError::TaskNotFound)?;
-        if !tenant.tasks.contains_key(task_id) {
+        if !tenant
+            .tasks
+            .get(task_id)
+            .is_some_and(|task| task_owned_by(task, context))
+        {
             return Err(ApplicationError::TaskNotFound);
         }
         Ok(tenant
@@ -980,6 +997,10 @@ fn profile_visible(profile: &CapabilityProfile, context: &TrustedRequestContext)
         || &profile.created_by == context.authority.authority()
 }
 
+fn task_owned_by(task: &Task, context: &TrustedRequestContext) -> bool {
+    &task.actor == context.authority.authority()
+}
+
 fn require_visible_profile(
     tenant: &TenantState,
     profile_id: Option<&CapabilityProfileId>,
@@ -1222,6 +1243,7 @@ mod tests {
         let app = Application::new(Arc::new(EmptyCatalog));
         let tenant_one = context("tenant-one", 10);
         let other = context("tenant-two", 11);
+        let tenant_peer = context_for("tenant-one", "human-bob", 12);
         let (agent, _) = active_agent(&app, &tenant_one);
         let task = app
             .submit_task(
@@ -1274,6 +1296,15 @@ mod tests {
         assert!(matches!(events[3].event, TaskEventKind::Succeeded { .. }));
         assert!(matches!(
             app.subscribe_task_events(&other, &task.id),
+            Err(ApplicationError::TaskNotFound)
+        ));
+        assert!(app.list_tasks(&tenant_peer).unwrap().is_empty());
+        assert_eq!(
+            app.get_task(&tenant_peer, &task.id),
+            Err(ApplicationError::TaskNotFound)
+        );
+        assert!(matches!(
+            app.subscribe_task_events(&tenant_peer, &task.id),
             Err(ApplicationError::TaskNotFound)
         ));
         let wrong_attempt = AttemptId::new("atm_wrong").unwrap();
