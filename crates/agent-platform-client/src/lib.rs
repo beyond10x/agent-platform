@@ -57,6 +57,11 @@ impl AgentPlatformClient {
         self.get_json(bearer, "v1/agents").await
     }
 
+    pub async fn get_agent(&self, bearer: &str, agent_id: &AgentId) -> Result<Agent, ClientError> {
+        self.get_json(bearer, &format!("v1/agents/{agent_id}"))
+            .await
+    }
+
     pub async fn create_agent(
         &self,
         bearer: &str,
@@ -72,6 +77,15 @@ impl AgentPlatformClient {
         request: &RevisionSpec,
     ) -> Result<AgentRevision, ClientError> {
         self.post_json(bearer, &format!("v1/agents/{agent_id}/revisions"), request)
+            .await
+    }
+
+    pub async fn list_revisions(
+        &self,
+        bearer: &str,
+        agent_id: &AgentId,
+    ) -> Result<Vec<AgentRevision>, ClientError> {
+        self.get_json(bearer, &format!("v1/agents/{agent_id}/revisions"))
             .await
     }
 
