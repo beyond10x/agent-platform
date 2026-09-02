@@ -67,7 +67,7 @@ jobs:
           build-args: SOURCE_SHA=${{ github.sha }}
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
-          tags: ghcr.io/beyond10x/agent-platform-runtime:${{ github.ref_name }}-${{ matrix.arch }}
+          tags: ghcr.io/beyond10x/agent-platform:${{ github.ref_name }}-${{ matrix.arch }}
 
   manifest:
     needs: image
@@ -86,20 +86,20 @@ jobs:
         id: publish
         run: |
           docker buildx imagetools create \
-            --tag "ghcr.io/beyond10x/agent-platform-runtime:${GITHUB_REF_NAME}" \
-            "ghcr.io/beyond10x/agent-platform-runtime:${GITHUB_REF_NAME}-amd64" \
-            "ghcr.io/beyond10x/agent-platform-runtime:${GITHUB_REF_NAME}-arm64"
+            --tag "ghcr.io/beyond10x/agent-platform:${GITHUB_REF_NAME}" \
+            "ghcr.io/beyond10x/agent-platform:${GITHUB_REF_NAME}-amd64" \
+            "ghcr.io/beyond10x/agent-platform:${GITHUB_REF_NAME}-arm64"
           digest=$(docker buildx imagetools inspect \
-            "ghcr.io/beyond10x/agent-platform-runtime:${GITHUB_REF_NAME}" \
+            "ghcr.io/beyond10x/agent-platform:${GITHUB_REF_NAME}" \
             --format '{{json .Manifest.Digest}}' | tr -d '"')
           case "$digest" in sha256:*) ;; *) exit 1 ;; esac
-          cosign sign --yes "ghcr.io/beyond10x/agent-platform-runtime@${digest}"
+          cosign sign --yes "ghcr.io/beyond10x/agent-platform@${digest}"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
       - name: Require private package visibility
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          test "$(gh api /orgs/beyond10x/packages/container/agent-platform-runtime --jq .visibility)" = private
+          test "$(gh api /orgs/beyond10x/packages/container/agent-platform --jq .visibility)" = private
 
   release:
     needs: manifest
