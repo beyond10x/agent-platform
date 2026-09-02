@@ -4,6 +4,12 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-09-02
+
+- Bootstrap the repository-linked private `agent-platform-server` package with the organization
+  App's package authority, rather than a repository token whose public-repository inheritance made
+  the prior package public and caused the release guard to refuse it.
+
 ## [0.5.3] — 2026-09-02
 
 - Bind the private `ghcr.io/beyond10x/agent-platform-service` runtime package to this repository

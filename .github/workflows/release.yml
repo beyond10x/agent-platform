@@ -52,12 +52,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Organization package token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.B10X_BOT_APP_ID }}
+          private-key: ${{ secrets.B10X_BOT_PRIVATE_KEY }}
+          owner: beyond10x
+          repositories: agent-platform
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: b10x-bot[bot]
+          password: ${{ steps.app-token.outputs.token }}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -70,7 +78,7 @@ jobs:
           build-args: SOURCE_SHA=${{ github.sha }}
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
-          tags: ghcr.io/beyond10x/agent-platform-service:${{ github.ref_name }}-${{ matrix.arch }}
+          tags: ghcr.io/beyond10x/agent-platform-server:${{ github.ref_name }}-${{ matrix.arch }}
 
   manifest:
     needs: image
@@ -78,31 +86,39 @@ jobs:
     outputs:
       digest: ${{ steps.publish.outputs.digest }}
     steps:
+      - name: Organization package token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.B10X_BOT_APP_ID }}
+          private-key: ${{ secrets.B10X_BOT_PRIVATE_KEY }}
+          owner: beyond10x
+          repositories: agent-platform
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: b10x-bot[bot]
+          password: ${{ steps.app-token.outputs.token }}
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Publish and sign the immutable manifest
         id: publish
         run: |
           docker buildx imagetools create \
-            --tag "ghcr.io/beyond10x/agent-platform-service:${GITHUB_REF_NAME}" \
-            "ghcr.io/beyond10x/agent-platform-service:${GITHUB_REF_NAME}-amd64" \
-            "ghcr.io/beyond10x/agent-platform-service:${GITHUB_REF_NAME}-arm64"
+            --tag "ghcr.io/beyond10x/agent-platform-server:${GITHUB_REF_NAME}" \
+            "ghcr.io/beyond10x/agent-platform-server:${GITHUB_REF_NAME}-amd64" \
+            "ghcr.io/beyond10x/agent-platform-server:${GITHUB_REF_NAME}-arm64"
           digest=$(docker buildx imagetools inspect \
-            "ghcr.io/beyond10x/agent-platform-service:${GITHUB_REF_NAME}" \
+            "ghcr.io/beyond10x/agent-platform-server:${GITHUB_REF_NAME}" \
             --format '{{json .Manifest.Digest}}' | tr -d '"')
           case "$digest" in sha256:*) ;; *) exit 1 ;; esac
-          cosign sign --yes "ghcr.io/beyond10x/agent-platform-service@${digest}"
+          cosign sign --yes "ghcr.io/beyond10x/agent-platform-server@${digest}"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
       - name: Require private package visibility
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          test "$(gh api /orgs/beyond10x/packages/container/agent-platform-service --jq .visibility)" = private
+          test "$(gh api /orgs/beyond10x/packages/container/agent-platform-server --jq .visibility)" = private
 
   release:
     needs: manifest
