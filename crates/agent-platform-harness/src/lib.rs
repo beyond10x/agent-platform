@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use agent_platform_auth::UserModelLease;
+use agent_platform_auth::{AttemptConnectorAccess, UserModelLease, operation};
 use agent_platform_connectors::{CompiledCapability, CompiledToolset};
-use agent_platform_core::{ConversationInput, ConversationRole, RevisionSpec};
-use harness_loop::{AgentLoop, DenyAll, LoopConfig, LoopError, LoopEvent, LoopOutcome, LoopSink};
+use agent_platform_core::{AttemptId, ConversationInput, ConversationRole, RevisionSpec};
+use harness_loop::{AgentLoop, LoopConfig, LoopError, LoopEvent, LoopOutcome, LoopSink};
 use harness_messages::{Endpoint, MessagesClient};
 use harness_wire::{
     Bearer, BearerSource, CredentialKind, ModelPort, Subject, ToolCall, ToolOutcome, ToolPort,
@@ -15,13 +15,17 @@ use harness_wire::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use harness_loop::{ApprovalDecision, ApprovalPort};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectorInvocation {
+    pub call_id: String,
     pub operation_ref: String,
     pub connection_ref: String,
     pub description_ref: String,
     pub input: Value,
+    pub approval_evidence_ref: Option<String>,
 }
 
 pub trait ConnectorInvoker: Send + Sync {
@@ -91,10 +95,12 @@ impl ToolPort for ConnectorTools {
             ));
         };
         self.invoker.invoke(ConnectorInvocation {
+            call_id: call.call_id.as_str().to_owned(),
             operation_ref: capability.operation_ref.clone(),
             connection_ref: capability.connection_ref.clone(),
             description_ref: capability.description_ref.clone(),
             input: call.arguments.clone(),
+            approval_evidence_ref: None,
         })
     }
 }
@@ -105,12 +111,12 @@ pub fn run(
     revision: &RevisionSpec,
     input: impl Into<String>,
     sink: &mut dyn LoopSink,
+    approvals: &mut dyn ApprovalPort,
 ) -> Result<LoopOutcome, LoopError> {
-    let mut approvals = DenyAll;
     AgentLoop::new(
         model,
         tools,
-        &mut approvals,
+        approvals,
         LoopConfig::new(revision.model.clone(), revision.instructions.clone()),
     )
     .run(input, sink)
@@ -120,6 +126,18 @@ pub fn run(
 pub struct UserModelRunner {
     endpoint_base: String,
     context_window: u64,
+}
+
+pub struct UserModelExecution {
+    pub revision: RevisionSpec,
+    pub toolset: Option<CompiledToolset>,
+    pub input: Value,
+    pub lease: Arc<UserModelLease>,
+    pub connector_access: Option<Arc<AttemptConnectorAccess>>,
+    pub attempt_id: AttemptId,
+    pub connector_context: operation::OwnerContext,
+    pub approval_evidence: ConnectorApprovalEvidence,
+    pub approvals: Box<dyn ApprovalPort + Send>,
 }
 
 impl UserModelRunner {
@@ -139,12 +157,20 @@ impl UserModelRunner {
 
     pub async fn execute(
         &self,
-        revision: RevisionSpec,
-        toolset: Option<CompiledToolset>,
-        input: Value,
-        lease: Arc<UserModelLease>,
+        execution: UserModelExecution,
         emit_text: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Result<String, ExecutionError> {
+        let UserModelExecution {
+            revision,
+            toolset,
+            input,
+            lease,
+            connector_access,
+            attempt_id,
+            connector_context,
+            approval_evidence,
+            mut approvals,
+        } = execution;
         let prompt = task_prompt(&input)?;
         let endpoint_base = self.endpoint_base.clone();
         let context_window = self.context_window;
@@ -152,14 +178,36 @@ impl UserModelRunner {
         tokio::task::spawn_blocking(move || {
             let endpoint = Endpoint::new(endpoint_base, revision.model.clone(), context_window)
                 .map_err(|_| ExecutionError::Configuration)?;
-            let source = Arc::new(LeaseBearerSource { lease, handle });
+            let source = Arc::new(LeaseBearerSource {
+                lease,
+                handle: handle.clone(),
+            });
             let mut model = MessagesClient::new(endpoint, source)
                 .map_err(|error| execution_wire_error(&error))?;
             let toolset = toolset.unwrap_or_else(empty_toolset);
-            let mut tools = ConnectorTools::new(&toolset, Arc::new(RefusingInvoker));
+            let invoker: Arc<dyn ConnectorInvoker> = connector_access.map_or_else(
+                || Arc::new(RefusingInvoker) as Arc<dyn ConnectorInvoker>,
+                |access| {
+                    Arc::new(HostedConnectorInvoker {
+                        access,
+                        attempt_id,
+                        context: connector_context,
+                        approval_evidence,
+                        handle: handle.clone(),
+                    }) as Arc<dyn ConnectorInvoker>
+                },
+            );
+            let mut tools = ConnectorTools::new(&toolset, invoker);
             let mut sink = TextSink { emit_text };
-            let outcome = run(&mut model, &mut tools, &revision, prompt, &mut sink)
-                .map_err(|error| execution_loop_error(&error))?;
+            let outcome = run(
+                &mut model,
+                &mut tools,
+                &revision,
+                prompt,
+                &mut sink,
+                approvals.as_mut(),
+            )
+            .map_err(|error| execution_loop_error(&error))?;
             if outcome.stop.is_completed() {
                 Ok(outcome.text)
             } else {
@@ -290,6 +338,71 @@ struct RefusingInvoker;
 impl ConnectorInvoker for RefusingInvoker {
     fn invoke(&self, _: ConnectorInvocation) -> ToolOutcome {
         ToolOutcome::failed("Connector invocation is not configured for this worker")
+    }
+}
+
+/// Attempt-local handoff from the blocking human approval port to the following invocation.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectorApprovalEvidence {
+    values: Arc<Mutex<BTreeMap<String, String>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ApprovalEvidenceError {
+    #[error("approval evidence already exists for the call")]
+    AlreadyPresent,
+    #[error("approval evidence storage is unavailable")]
+    Unavailable,
+}
+
+impl ConnectorApprovalEvidence {
+    pub fn approve(
+        &self,
+        call_id: String,
+        approval_evidence_ref: String,
+    ) -> Result<(), ApprovalEvidenceError> {
+        let mut values = self
+            .values
+            .lock()
+            .map_err(|_| ApprovalEvidenceError::Unavailable)?;
+        if values.contains_key(&call_id) {
+            return Err(ApprovalEvidenceError::AlreadyPresent);
+        }
+        values.insert(call_id, approval_evidence_ref);
+        Ok(())
+    }
+
+    fn take(&self, call_id: &str) -> Option<String> {
+        self.values.lock().ok()?.remove(call_id)
+    }
+}
+
+struct HostedConnectorInvoker {
+    access: Arc<AttemptConnectorAccess>,
+    attempt_id: AttemptId,
+    context: operation::OwnerContext,
+    approval_evidence: ConnectorApprovalEvidence,
+    handle: tokio::runtime::Handle,
+}
+
+impl ConnectorInvoker for HostedConnectorInvoker {
+    fn invoke(&self, mut request: ConnectorInvocation) -> ToolOutcome {
+        request.approval_evidence_ref = self.approval_evidence.take(&request.call_id);
+        let operation = operation::InvokeRequest {
+            operation_ref: request.operation_ref,
+            connection_ref: request.connection_ref,
+            description_ref: request.description_ref,
+            input: request.input,
+            approval_evidence_ref: request.approval_evidence_ref,
+        };
+        match self.handle.block_on(
+            self.access
+                .invoke(&self.attempt_id, &self.context, operation),
+        ) {
+            Ok(operation::OperationResult::Invoke(result)) => ToolOutcome::ok(result.output),
+            Ok(_) => ToolOutcome::failed("Connector returned a non-invocation result"),
+            Err(error) => ToolOutcome::failed(error.reason()),
+        }
     }
 }
 
@@ -498,12 +611,14 @@ mod tests {
             metadata: None,
         };
         let mut sink = VecLoopSink::new();
+        let mut approvals = harness_loop::DenyAll;
         let outcome = run(
             &mut model,
             &mut tools,
             &revision,
             "List open support work.",
             &mut sink,
+            &mut approvals,
         )
         .unwrap();
         assert_eq!(outcome.stop, LoopStop::Completed);
@@ -514,5 +629,21 @@ mod tests {
         assert_eq!(requests[0].operation_ref, "support.ticket.list");
         assert_eq!(requests[0].connection_ref, "synthetic-support");
         assert_eq!(requests[0].input, json!({"status": "open"}));
+    }
+
+    #[test]
+    fn approval_evidence_is_exact_call_and_single_use() {
+        let evidence = ConnectorApprovalEvidence::default();
+        evidence
+            .approve("call-one".to_owned(), "proof-one".to_owned())
+            .unwrap();
+        assert!(
+            evidence
+                .approve("call-one".to_owned(), "proof-two".to_owned())
+                .is_err()
+        );
+        assert_eq!(evidence.take("call-one").as_deref(), Some("proof-one"));
+        assert_eq!(evidence.take("call-one"), None);
+        assert_eq!(evidence.take("call-two"), None);
     }
 }

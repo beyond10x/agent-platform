@@ -41,7 +41,7 @@ harness-wire = { package = "b10x-harness-wire", git = "https://github.com/beyond
 harness-loop = { package = "b10x-harness-loop", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
 harness-messages = { package = "b10x-harness-messages", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
 identity-client = { git = "ssh://git@github.com/beyond10x/identity.git", tag = "0.3.1" }
-connectors-client = { git = "ssh://git@github.com/beyond10x/connectors.git", tag = "v0.3.1" }
+connectors-client = { git = "ssh://git@github.com/beyond10x/connectors.git", rev = "8100d9bfbfe39c844dc7c0226db94d44d24cb55e" }
 
 axum = "0.8"
 async-stream = "0.3"

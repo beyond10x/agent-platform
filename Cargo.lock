@@ -132,9 +132,12 @@ dependencies = [
  "agent-platform-openapi",
  "async-stream",
  "axum",
+ "b10x-harness-wire",
+ "hex",
  "http-body-util",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tower",
  "uuid",
@@ -570,16 +573,16 @@ dependencies = [
 
 [[package]]
 name = "connector-state"
-version = "0.3.1"
-source = "git+ssh://git@github.com/beyond10x/connectors.git?tag=v0.3.1#bcd3e3a4c220d83bbeeb7c64ef33ba928ef6c408"
+version = "0.4.0"
+source = "git+ssh://git@github.com/beyond10x/connectors.git?rev=8100d9bfbfe39c844dc7c0226db94d44d24cb55e#8100d9bfbfe39c844dc7c0226db94d44d24cb55e"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "connectors-client"
-version = "0.3.1"
-source = "git+ssh://git@github.com/beyond10x/connectors.git?tag=v0.3.1#bcd3e3a4c220d83bbeeb7c64ef33ba928ef6c408"
+version = "0.4.0"
+source = "git+ssh://git@github.com/beyond10x/connectors.git?rev=8100d9bfbfe39c844dc7c0226db94d44d24cb55e#8100d9bfbfe39c844dc7c0226db94d44d24cb55e"
 dependencies = [
  "protocol",
  "reqwest 0.12.28",
@@ -691,8 +694,8 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.3.1"
-source = "git+ssh://git@github.com/beyond10x/connectors.git?tag=v0.3.1#bcd3e3a4c220d83bbeeb7c64ef33ba928ef6c408"
+version = "0.4.0"
+source = "git+ssh://git@github.com/beyond10x/connectors.git?rev=8100d9bfbfe39c844dc7c0226db94d44d24cb55e#8100d9bfbfe39c844dc7c0226db94d44d24cb55e"
 dependencies = [
  "async-trait",
  "connector-state",
@@ -1547,8 +1550,8 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.3.1"
-source = "git+ssh://git@github.com/beyond10x/connectors.git?tag=v0.3.1#bcd3e3a4c220d83bbeeb7c64ef33ba928ef6c408"
+version = "0.4.0"
+source = "git+ssh://git@github.com/beyond10x/connectors.git?rev=8100d9bfbfe39c844dc7c0226db94d44d24cb55e#8100d9bfbfe39c844dc7c0226db94d44d24cb55e"
 dependencies = [
  "domain",
  "schemars 1.2.2",

@@ -14,8 +14,8 @@ use agent_platform_connectors::{
 };
 use agent_platform_core::{
     ActivateRevision, Agent, AgentId, AgentRevision, AttemptId, CapabilityProfileId, CreateAgent,
-    CreateCapabilityProfile, CreateTrigger, RequestId, RevisionSpec, SubmitTask, Task, TaskEvent,
-    TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId,
+    CreateCapabilityProfile, CreateTrigger, PendingApproval, RequestId, RevisionSpec, SubmitTask,
+    Task, TaskEvent, TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId,
     UpdateCapabilityProfile, ValidationError,
 };
 use schemars::JsonSchema;
@@ -560,6 +560,19 @@ impl Application {
             .ok_or(ApplicationError::TaskNotFound)
     }
 
+    pub fn get_task_for_approval(
+        &self,
+        context: &TrustedRequestContext,
+        task_id: &TaskId,
+    ) -> Result<Task, ApplicationError> {
+        context.require(TASKS_SUBMIT)?;
+        let state = self.lock_state()?;
+        tenant(&state, context)
+            .and_then(|tenant| tenant.tasks.get(task_id))
+            .cloned()
+            .ok_or(ApplicationError::TaskNotFound)
+    }
+
     pub fn subscribe_task_events(
         &self,
         context: &TrustedRequestContext,
@@ -618,6 +631,52 @@ impl Application {
             at_ms,
             TaskStatus::Running,
             TaskEventKind::Running,
+            None,
+            None,
+        )
+    }
+
+    pub fn mark_task_awaiting_approval(
+        &self,
+        tenant_id: &TenantId,
+        approval: &PendingApproval,
+    ) -> Result<(), ApplicationError> {
+        self.transition_task(
+            tenant_id,
+            &approval.task_id,
+            &approval.attempt_id,
+            approval.requested_at_ms,
+            TaskStatus::AwaitingApproval,
+            TaskEventKind::ApprovalRequested {
+                approval_id: approval.id.clone(),
+                call_id: approval.call_id.clone(),
+                operation_ref: approval.operation_ref.clone(),
+                connection_ref: approval.connection_ref.clone(),
+            },
+            None,
+            None,
+        )
+    }
+
+    pub fn resolve_task_approval(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        approval_id: agent_platform_core::ApprovalId,
+        approved: bool,
+    ) -> Result<(), ApplicationError> {
+        self.transition_task(
+            tenant_id,
+            task_id,
+            attempt_id,
+            at_ms,
+            TaskStatus::Running,
+            TaskEventKind::ApprovalResolved {
+                approval_id,
+                approved,
+            },
             None,
             None,
         )

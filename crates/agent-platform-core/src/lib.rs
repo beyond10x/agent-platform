@@ -40,6 +40,20 @@ fn validate_identifier(field: &'static str, value: &str) -> Result<(), Validatio
     Ok(())
 }
 
+fn validate_reference(
+    field: &'static str,
+    value: &str,
+    maximum: usize,
+) -> Result<(), ValidationError> {
+    if value.is_empty()
+        || value.len() > maximum
+        || !value.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(ValidationError::InvalidIdentifier { field, maximum });
+    }
+    Ok(())
+}
+
 fn validate_text(field: &'static str, value: &str, maximum: usize) -> Result<(), ValidationError> {
     if value.trim().is_empty() || value.len() > maximum {
         return Err(ValidationError::InvalidText { field, maximum });
@@ -81,6 +95,7 @@ id_type!(AgentId, "agent id");
 id_type!(CapabilityProfileId, "capability profile id");
 id_type!(TaskId, "task id");
 id_type!(AttemptId, "attempt id");
+id_type!(ApprovalId, "approval id");
 id_type!(TriggerId, "trigger id");
 id_type!(RequestId, "request id");
 id_type!(DelegationId, "delegation id");
@@ -430,14 +445,65 @@ pub struct TaskFailure {
     pub message: String,
 }
 
+/// Exact effectful Connector call suspended for a human decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PendingApproval {
+    pub id: ApprovalId,
+    pub task_id: TaskId,
+    pub attempt_id: AttemptId,
+    pub call_id: String,
+    pub tool_name: String,
+    pub operation_ref: String,
+    pub connection_ref: String,
+    pub description_ref: String,
+    pub input: Value,
+    pub requested_at_ms: u64,
+}
+
+/// Human decision submitted to the suspended attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ResolveApproval {
+    Approve { approval_evidence_ref: String },
+    Deny { reason: String },
+}
+
+impl ResolveApproval {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        match self {
+            Self::Approve {
+                approval_evidence_ref,
+            } => validate_reference("approval evidence reference", approval_evidence_ref, 512),
+            Self::Deny { reason } => validate_text("approval denial reason", reason, 4_096),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskEventKind {
     Accepted,
     Running,
-    TextDelta { text: String },
-    Succeeded { output: String },
-    Failed { failure: TaskFailure },
+    TextDelta {
+        text: String,
+    },
+    ApprovalRequested {
+        approval_id: ApprovalId,
+        call_id: String,
+        operation_ref: String,
+        connection_ref: String,
+    },
+    ApprovalResolved {
+        approval_id: ApprovalId,
+        approved: bool,
+    },
+    Succeeded {
+        output: String,
+    },
+    Failed {
+        failure: TaskFailure,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

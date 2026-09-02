@@ -13,6 +13,8 @@ pub const CAPABILITY_PROFILE_PATH: &str = "/v1/capability-profiles/{profile_id}"
 pub const TASKS_PATH: &str = "/v1/tasks";
 pub const TASK_PATH: &str = "/v1/tasks/{task_id}";
 pub const TASK_EVENTS_PATH: &str = "/v1/tasks/{task_id}/events";
+pub const TASK_APPROVALS_PATH: &str = "/v1/tasks/{task_id}/approvals";
+pub const TASK_APPROVAL_PATH: &str = "/v1/tasks/{task_id}/approvals/{approval_id}";
 pub const TRIGGERS_PATH: &str = "/v1/triggers";
 pub const OPENAPI_PATH: &str = "/openapi.json";
 pub const DOCS_ROOT_PATH: &str = "/docs";
@@ -53,6 +55,8 @@ pub enum Operation {
     SubmitTask,
     GetTask,
     StreamTaskEvents,
+    ListTaskApprovals,
+    ResolveTaskApproval,
     ListTriggers,
     CreateTrigger,
 }
@@ -74,6 +78,8 @@ impl Operation {
             Self::SubmitTask => "submitTask",
             Self::GetTask => "getTask",
             Self::StreamTaskEvents => "streamTaskEvents",
+            Self::ListTaskApprovals => "listTaskApprovals",
+            Self::ResolveTaskApproval => "resolveTaskApproval",
             Self::ListTriggers => "listTriggers",
             Self::CreateTrigger => "createTrigger",
         }
@@ -95,6 +101,8 @@ impl Operation {
             Self::SubmitTask => "Idempotently admit an asynchronous task",
             Self::GetTask => "Get task state",
             Self::StreamTaskEvents => "Stream task events",
+            Self::ListTaskApprovals => "List exact Connector calls awaiting human approval",
+            Self::ResolveTaskApproval => "Resolve an exact Connector call approval",
             Self::ListTriggers => "List trigger definitions",
             Self::CreateTrigger => "Create a schedule or webhook trigger definition",
         }
@@ -208,6 +216,20 @@ pub const ROUTES: &[RouteSpec] = &[
         operation: Operation::StreamTaskEvents,
         authenticated: true,
         success_status: 200,
+    },
+    RouteSpec {
+        method: Method::Get,
+        path: TASK_APPROVALS_PATH,
+        operation: Operation::ListTaskApprovals,
+        authenticated: true,
+        success_status: 200,
+    },
+    RouteSpec {
+        method: Method::Post,
+        path: TASK_APPROVAL_PATH,
+        operation: Operation::ResolveTaskApproval,
+        authenticated: true,
+        success_status: 202,
     },
     RouteSpec {
         method: Method::Get,

@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_platform_core::{AttemptId, DelegationId, SubjectId, TenantId, ValidationError};
+pub use connectors_client::operation;
 use connectors_client::{HostedClient, RedeemedSubscription, SubscriptionLease};
-use identity_client::IdentityClient;
+use identity_client::{AccessCredential, IdentityClient};
 use sha2::{Digest, Sha256};
 
 pub const AGENTS_READ: &str = "agents.read";
@@ -21,6 +22,7 @@ pub const TRIGGERS_READ: &str = "triggers.read";
 pub const TRIGGERS_MANAGE: &str = "triggers.manage";
 pub const CONNECTORS_AUDIENCE: &str = "urn:b10x:connectors";
 pub const CONNECTORS_LEASE_SCOPE: &str = "connectors.credentials.lease";
+pub const CONNECTORS_INVOKE_SCOPE: &str = "connectors.invoke";
 const MODEL_LEASE_TTL: Duration = Duration::from_mins(30);
 const MODEL_LEASE_USES: u16 = 128;
 
@@ -124,10 +126,66 @@ impl UserModelLease {
     }
 }
 
+/// Attempt-bounded authority to invoke Connector operations without exposing the Identity token.
+#[derive(Clone)]
+pub struct AttemptConnectorAccess {
+    connectors: HostedClient,
+    credential: AccessCredential,
+    attempt_id: AttemptId,
+}
+
+impl std::fmt::Debug for AttemptConnectorAccess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AttemptConnectorAccess")
+            .field("attempt_id", &self.attempt_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AttemptConnectorAccess {
+    pub fn attempt_id(&self) -> &AttemptId {
+        &self.attempt_id
+    }
+
+    /// Invoke through the exact attempt that received this short-lived authority.
+    pub async fn invoke(
+        &self,
+        attempt_id: &AttemptId,
+        context: &operation::OwnerContext,
+        request: operation::InvokeRequest,
+    ) -> Result<operation::OperationResult, AuthenticationError> {
+        if attempt_id != &self.attempt_id {
+            return Err(AuthenticationError::new(
+                "Connector invocation authority belongs to another attempt",
+            ));
+        }
+        let response = self
+            .connectors
+            .operation(
+                self.credential.expose_at_authorization_boundary(),
+                context,
+                operation::OperationRequest::Invoke(request),
+            )
+            .await
+            .map_err(|_| AuthenticationError::new("Connector invocation is unavailable"))?;
+        match (response.status, response.response, response.error) {
+            (operation::ResponseStatus::Ok, Some(result), None) => Ok(result),
+            (operation::ResponseStatus::Error, None, Some(error)) => Err(AuthenticationError::new(
+                format!("Connector invocation refused: {:?}", error.code),
+            )),
+            _ => Err(AuthenticationError::new(
+                "Connector returned an invalid invocation response",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthenticatedRequest {
     authority: VerifiedAuthority,
     user_model_lease: Option<Arc<UserModelLease>>,
+    connector_access: Option<Arc<AttemptConnectorAccess>>,
 }
 
 impl AuthenticatedRequest {
@@ -135,8 +193,14 @@ impl AuthenticatedRequest {
         &self.authority
     }
 
-    pub fn into_parts(self) -> (VerifiedAuthority, Option<Arc<UserModelLease>>) {
-        (self.authority, self.user_model_lease)
+    pub fn into_parts(
+        self,
+    ) -> (
+        VerifiedAuthority,
+        Option<Arc<UserModelLease>>,
+        Option<Arc<AttemptConnectorAccess>>,
+    ) {
+        (self.authority, self.user_model_lease, self.connector_access)
     }
 }
 
@@ -240,7 +304,7 @@ impl CredentialVerifier for IdentityVerifier {
                 None,
                 self.scopes.clone(),
             )?;
-            let user_model_lease = match (attempt_id, &self.connectors) {
+            let (user_model_lease, connector_access) = match (attempt_id, &self.connectors) {
                 (Some(attempt_id), Some(connectors)) => {
                     let access = self
                         .client
@@ -268,22 +332,43 @@ impl CredentialVerifier for IdentityVerifier {
                                 "a connected user model subscription is required",
                             )
                         })?;
-                    Some(Arc::new(UserModelLease {
-                        connectors: connectors.clone(),
-                        lease,
-                        attempt_id: attempt_id.clone(),
-                    }))
+                    let invoke_access = self
+                        .client
+                        .issue_access_token(
+                            authorization,
+                            CONNECTORS_AUDIENCE,
+                            CONNECTORS_INVOKE_SCOPE,
+                        )
+                        .await
+                        .map_err(|_| {
+                            AuthenticationError::new(
+                                "Identity refused the Connector invocation authority",
+                            )
+                        })?;
+                    (
+                        Some(Arc::new(UserModelLease {
+                            connectors: connectors.clone(),
+                            lease,
+                            attempt_id: attempt_id.clone(),
+                        })),
+                        Some(Arc::new(AttemptConnectorAccess {
+                            connectors: connectors.clone(),
+                            credential: invoke_access.credential,
+                            attempt_id: attempt_id.clone(),
+                        })),
+                    )
                 }
                 (Some(_), None) => {
                     return Err(AuthenticationError::new(
                         "user model execution is not configured",
                     ));
                 }
-                (None, _) => None,
+                (None, _) => (None, None),
             };
             Ok(AuthenticatedRequest {
                 authority,
                 user_model_lease,
+                connector_access,
             })
         })
     }
@@ -339,6 +424,7 @@ impl CredentialVerifier for DevelopmentVerifier {
                 Ok(AuthenticatedRequest {
                     authority: self.authority.clone(),
                     user_model_lease: None,
+                    connector_access: None,
                 })
             } else {
                 Err(AuthenticationError::new(

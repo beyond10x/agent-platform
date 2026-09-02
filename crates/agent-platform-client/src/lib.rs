@@ -4,7 +4,8 @@ use std::time::Duration;
 
 pub use agent_platform_core::{
     ActivateRevision, Agent, AgentId, AgentRevision, CapabilityProfileId, CreateAgent,
-    CreateCapabilityProfile, RevisionSpec, SubmitTask, Task, TaskId, UpdateCapabilityProfile,
+    CreateCapabilityProfile, PendingApproval, ResolveApproval, RevisionSpec, SubmitTask, Task,
+    TaskId, UpdateCapabilityProfile,
 };
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde::de::DeserializeOwned;
@@ -124,6 +125,30 @@ impl AgentPlatformClient {
 
     pub async fn get_task(&self, bearer: &str, task_id: &TaskId) -> Result<Task, ClientError> {
         self.get_json(bearer, &format!("v1/tasks/{task_id}")).await
+    }
+
+    pub async fn list_task_approvals(
+        &self,
+        bearer: &str,
+        task_id: &TaskId,
+    ) -> Result<Vec<PendingApproval>, ClientError> {
+        self.get_json(bearer, &format!("v1/tasks/{task_id}/approvals"))
+            .await
+    }
+
+    pub async fn resolve_task_approval(
+        &self,
+        bearer: &str,
+        task_id: &TaskId,
+        approval_id: &agent_platform_core::ApprovalId,
+        resolution: &ResolveApproval,
+    ) -> Result<PendingApproval, ClientError> {
+        self.post_json(
+            bearer,
+            &format!("v1/tasks/{task_id}/approvals/{approval_id}"),
+            resolution,
+        )
+        .await
     }
 
     /// Returns the bounded streaming response without buffering it. The caller owns SSE framing.

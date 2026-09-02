@@ -6,14 +6,15 @@ use agent_platform_api::{Operation, ProblemDocument, ROUTES, RouteSpec};
 use agent_platform_app::CapabilityProfile;
 use agent_platform_core::{
     ActivateRevision, Agent, AgentRevision, CreateAgent, CreateCapabilityProfile, CreateTrigger,
-    RevisionSpec, SubmitTask, Task, TaskEvent, Trigger, UpdateCapabilityProfile,
+    PendingApproval, ResolveApproval, RevisionSpec, SubmitTask, Task, TaskEvent, Trigger,
+    UpdateCapabilityProfile,
 };
 use schemars::JsonSchema;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const EXPECTED_OPENAPI_SHA256: &str =
-    "8c5fba0fe56164fa1558fb3a78909e0d2c73ad7aceb8a3a591dea0bb0685495d";
+    "b0761a02327506cdcd7001a40be58c1306733439d98dbfa034d6ed8882a56642";
 
 /// Builds the complete `OpenAPI` document as a deterministic JSON value.
 ///
@@ -40,6 +41,9 @@ pub fn document() -> Value {
     register::<Task>("Task", &mut schemas);
     register::<Vec<Task>>("TaskList", &mut schemas);
     register::<TaskEvent>("TaskEvent", &mut schemas);
+    register::<PendingApproval>("PendingApproval", &mut schemas);
+    register::<Vec<PendingApproval>>("PendingApprovalList", &mut schemas);
+    register::<ResolveApproval>("ResolveApproval", &mut schemas);
     register::<CreateTrigger>("CreateTrigger", &mut schemas);
     register::<Trigger>("Trigger", &mut schemas);
     register::<Vec<Trigger>>("TriggerList", &mut schemas);
@@ -153,6 +157,7 @@ const fn request_schema(operation: Operation) -> Option<&'static str> {
         Operation::CreateCapabilityProfile => Some("CreateCapabilityProfile"),
         Operation::UpdateCapabilityProfile => Some("UpdateCapabilityProfile"),
         Operation::SubmitTask => Some("SubmitTask"),
+        Operation::ResolveTaskApproval => Some("ResolveApproval"),
         Operation::CreateTrigger => Some("CreateTrigger"),
         Operation::Liveness
         | Operation::ListAgents
@@ -162,6 +167,7 @@ const fn request_schema(operation: Operation) -> Option<&'static str> {
         | Operation::ListTasks
         | Operation::GetTask
         | Operation::StreamTaskEvents
+        | Operation::ListTaskApprovals
         | Operation::ListTriggers => None,
     }
 }
@@ -179,6 +185,8 @@ const fn response_schema(operation: Operation) -> &'static str {
         Operation::ListTasks => "TaskList",
         Operation::SubmitTask | Operation::GetTask => "Task",
         Operation::StreamTaskEvents => "TaskEvent",
+        Operation::ListTaskApprovals => "PendingApprovalList",
+        Operation::ResolveTaskApproval => "PendingApproval",
         Operation::ListTriggers => "TriggerList",
         Operation::CreateTrigger => "Trigger",
         Operation::Liveness => "ProblemDocument",
@@ -186,7 +194,7 @@ const fn response_schema(operation: Operation) -> &'static str {
 }
 
 fn path_parameters(path: &str) -> Vec<Value> {
-    ["agent_id", "profile_id", "task_id"]
+    ["agent_id", "profile_id", "task_id", "approval_id"]
         .into_iter()
         .filter(|name| path.contains(&format!("{{{name}}}")))
         .map(|name| {

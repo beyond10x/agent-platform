@@ -17,10 +17,13 @@ agent-platform-core.workspace = true
 agent-platform-docs.workspace = true
 agent-platform-openapi.workspace = true
 agent-platform-harness.workspace = true
+harness-wire.workspace = true
+hex.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
