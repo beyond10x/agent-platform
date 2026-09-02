@@ -15,7 +15,8 @@ RUN --mount=type=secret,id=github_token,required=true \
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:adcd20c7b4c988b73cbfbddb26d2eee574571e6d7c9ffea29b3821e0690efb77
 ARG SOURCE_SHA=unknown
-LABEL org.opencontainers.image.revision=$SOURCE_SHA
+LABEL org.opencontainers.image.revision=$SOURCE_SHA \
+      org.opencontainers.image.source="https://github.com/beyond10x/agent-platform"
 COPY --from=builder /out/agent-platform /usr/local/bin/agent-platform
 EXPOSE 8090
 ENTRYPOINT ["/usr/local/bin/agent-platform"]

@@ -4,11 +4,17 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-09-02
+
+- Bind the private `ghcr.io/beyond10x/agent-platform-service` runtime package to this repository
+  through OCI source metadata and bootstrap its architectures sequentially, so each short-lived
+  release job receives repository-inherited package access without widening package visibility.
+
 ## [0.5.2] — 2026-09-02
 
-- Publish the runtime through the new private `ghcr.io/beyond10x/agent-platform` package after the
-  retired `agent-platform-runtime` package had already been made irreversibly public; the release
-  gate still refuses to announce any image whose package is not private.
+- Retire the irreversibly public `agent-platform-runtime` identity and attempt publication through
+  a new private package; no release was announced when that package lacked repository-inherited
+  access.
 
 ## [0.5.1] — 2026-09-02
 
