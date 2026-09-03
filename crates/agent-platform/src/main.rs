@@ -73,7 +73,7 @@ struct ServeOptions {
     #[arg(long)]
     connector_catalog: Option<PathBuf>,
     /// Credential-free durable state snapshot. Omit only for disposable development processes.
-    #[arg(long)]
+    #[arg(long, env = "AGENT_PLATFORM_STATE_PATH")]
     state_path: Option<PathBuf>,
 }
 

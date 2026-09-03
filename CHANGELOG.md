@@ -4,8 +4,9 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
-- Allow hosted deployments to supply the Identity, Connectors, and Workspace client origins through
-  explicit `AGENT_PLATFORM_*` environment variables while preserving the corresponding CLI flags.
+- Allow hosted deployments to supply the Identity, Connectors, Workspace, and durable state inputs
+  through explicit `AGENT_PLATFORM_*` environment variables while preserving the corresponding CLI
+  flags.
 - Add a typed `coding_session_turn` conversation envelope that persists only Workspace and
   AgentIDE session references plus deliberate prompt attachments; actor context and intent
   inventory remain dynamically derived by Workspace for each model turn.
