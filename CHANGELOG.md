@@ -4,6 +4,11 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-09-03
+
+- Publish the repository-linked private runtime package with the scoped workflow token supported by
+  GHCR, removing the failed GitHub App-token bootstrap path and parallelizing architecture builds.
+
 ## [0.6.2] — 2026-09-03
 
 - Make a capability-profile `deny` terminal before Connector description and approval handling, so
