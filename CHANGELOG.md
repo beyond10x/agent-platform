@@ -4,6 +4,11 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+- Replace blocking, process-local approval waiters with Harness 0.11 durable checkpoints. Agent
+  Platform persists the checkpoint, exact immutable revision, compiled Connector toolset, decision,
+  and single-worker claim in tenant-scoped task state; restarts clear only the transient claim and
+  leave the exact approval resumable with freshly verified attempt authority.
+
 ## [0.6.1] — 2026-09-03
 
 - Scope task discovery, detail, approval, and event streams to the verified task owner, enabling

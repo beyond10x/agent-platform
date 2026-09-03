@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex};
 use agent_platform_auth::{AttemptConnectorAccess, UserModelLease, operation};
 use agent_platform_connectors::{CompiledCapability, CompiledToolset};
 use agent_platform_core::{AttemptId, ConversationInput, ConversationRole, RevisionSpec};
-use harness_loop::{AgentLoop, LoopConfig, LoopError, LoopEvent, LoopOutcome, LoopSink};
+use harness_loop::{
+    AgentLoop, ApprovalCheckpoint, LoopConfig, LoopError, LoopEvent, LoopOutcome, LoopSink,
+    LoopStop,
+};
 use harness_messages::{Endpoint, MessagesClient};
 use harness_wire::{
     Bearer, BearerSource, CredentialKind, ModelPort, Subject, ToolCall, ToolOutcome, ToolPort,
@@ -140,6 +143,12 @@ pub struct UserModelExecution {
     pub approvals: Box<dyn ApprovalPort + Send>,
 }
 
+#[derive(Debug)]
+pub enum UserModelRunOutcome {
+    Completed { output: String },
+    AwaitingApproval { checkpoint: Box<ApprovalCheckpoint> },
+}
+
 impl UserModelRunner {
     pub fn new(
         endpoint_base: impl Into<String>,
@@ -159,7 +168,29 @@ impl UserModelRunner {
         &self,
         execution: UserModelExecution,
         emit_text: Arc<dyn Fn(String) + Send + Sync>,
-    ) -> Result<String, ExecutionError> {
+    ) -> Result<UserModelRunOutcome, ExecutionError> {
+        let prompt = task_prompt(&execution.input)?;
+        self.drive(execution, Some(prompt), None, emit_text).await
+    }
+
+    pub async fn resume_approval(
+        &self,
+        execution: UserModelExecution,
+        checkpoint: ApprovalCheckpoint,
+        decision: ApprovalDecision,
+        emit_text: Arc<dyn Fn(String) + Send + Sync>,
+    ) -> Result<UserModelRunOutcome, ExecutionError> {
+        self.drive(execution, None, Some((checkpoint, decision)), emit_text)
+            .await
+    }
+
+    async fn drive(
+        &self,
+        execution: UserModelExecution,
+        prompt: Option<String>,
+        continuation: Option<(ApprovalCheckpoint, ApprovalDecision)>,
+        emit_text: Arc<dyn Fn(String) + Send + Sync>,
+    ) -> Result<UserModelRunOutcome, ExecutionError> {
         let UserModelExecution {
             revision,
             toolset,
@@ -171,7 +202,7 @@ impl UserModelRunner {
             approval_evidence,
             mut approvals,
         } = execution;
-        let prompt = task_prompt(&input)?;
+        let _ = input;
         let endpoint_base = self.endpoint_base.clone();
         let context_window = self.context_window;
         let handle = tokio::runtime::Handle::current();
@@ -199,19 +230,31 @@ impl UserModelRunner {
             );
             let mut tools = ConnectorTools::new(&toolset, invoker);
             let mut sink = TextSink { emit_text };
-            let outcome = run(
+            let mut agent_loop = AgentLoop::new(
                 &mut model,
                 &mut tools,
-                &revision,
-                prompt,
-                &mut sink,
                 approvals.as_mut(),
-            )
+                LoopConfig::new(revision.model.clone(), revision.instructions.clone()),
+            );
+            let outcome = match (prompt, continuation) {
+                (Some(prompt), None) => agent_loop.run(prompt, &mut sink),
+                (None, Some((checkpoint, decision))) => {
+                    agent_loop.resume_approval(checkpoint, decision, &mut sink)
+                }
+                _ => return Err(ExecutionError::HarnessConfiguration),
+            }
             .map_err(|error| execution_loop_error(&error))?;
-            if outcome.stop.is_completed() {
-                Ok(outcome.text)
-            } else {
-                Err(ExecutionError::Incomplete)
+            match outcome.stop {
+                LoopStop::Completed => Ok(UserModelRunOutcome::Completed {
+                    output: outcome.text,
+                }),
+                LoopStop::AwaitingApproval { .. } => outcome
+                    .checkpoint
+                    .map(|checkpoint| UserModelRunOutcome::AwaitingApproval {
+                        checkpoint: Box::new(checkpoint),
+                    })
+                    .ok_or(ExecutionError::HarnessConfiguration),
+                _ => Err(ExecutionError::Incomplete),
             }
         })
         .await
@@ -274,7 +317,7 @@ fn execution_loop_error(error: &LoopError) -> ExecutionError {
     match error {
         LoopError::Wire(error) => execution_wire_error(error),
         LoopError::Budget(_) => ExecutionError::RequestTooLarge,
-        LoopError::Config(_) => ExecutionError::HarnessConfiguration,
+        LoopError::Config(_) | LoopError::Environment(_) => ExecutionError::HarnessConfiguration,
     }
 }
 

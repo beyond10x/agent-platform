@@ -37,9 +37,9 @@ agent-platform-client = { path = "crates/agent-platform-client" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
 # keeps this service from reinterpreting that boundary crate by crate.
-harness-wire = { package = "b10x-harness-wire", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
-harness-loop = { package = "b10x-harness-loop", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
-harness-messages = { package = "b10x-harness-messages", git = "https://github.com/beyond10x/harness", tag = "0.10.0" }
+harness-wire = { package = "b10x-harness-wire", git = "https://github.com/beyond10x/harness", rev = "c86bec0977fbb5078a0be3942db78dbc2c79a0ef" }
+harness-loop = { package = "b10x-harness-loop", git = "https://github.com/beyond10x/harness", rev = "c86bec0977fbb5078a0be3942db78dbc2c79a0ef" }
+harness-messages = { package = "b10x-harness-messages", git = "https://github.com/beyond10x/harness", rev = "c86bec0977fbb5078a0be3942db78dbc2c79a0ef" }
 identity-client = { git = "ssh://git@github.com/beyond10x/identity.git", tag = "0.5.0" }
 connectors-client = { git = "ssh://git@github.com/beyond10x/connectors.git", tag = "v0.5.0" }
 

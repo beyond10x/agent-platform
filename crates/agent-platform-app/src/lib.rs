@@ -13,10 +13,11 @@ use agent_platform_connectors::{
     CompiledToolset, ConnectorCatalog, InMemoryCatalog, ProjectionError, compile,
 };
 use agent_platform_core::{
-    ActivateRevision, Agent, AgentId, AgentRevision, AttemptId, CapabilityProfileAudience,
-    CapabilityProfileId, CreateAgent, CreateCapabilityProfile, CreateTrigger, PendingApproval,
-    RequestId, RevisionSpec, SubmitTask, Task, TaskEvent, TaskEventKind, TaskFailure, TaskId,
-    TaskStatus, TenantId, Trigger, TriggerId, UpdateCapabilityProfile, ValidationError,
+    ActivateRevision, Agent, AgentId, AgentRevision, ApprovalId, AttemptId,
+    CapabilityProfileAudience, CapabilityProfileId, CreateAgent, CreateCapabilityProfile,
+    CreateTrigger, PendingApproval, RequestId, ResolveApproval, RevisionSpec, SubmitTask, Task,
+    TaskEvent, TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId,
+    UpdateCapabilityProfile, ValidationError,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,10 @@ pub enum ApplicationError {
     CapabilityProfileNotFound,
     #[error("task was not found")]
     TaskNotFound,
+    #[error("approval was not found")]
+    ApprovalNotFound,
+    #[error("approval was already resolved differently")]
+    ApprovalConflict,
     #[error("agent has no active revision")]
     NoActiveRevision,
     #[error("active revision changed; expected {expected:?}, found {actual:?}")]
@@ -130,6 +135,7 @@ pub enum ApplicationError {
 }
 
 const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_APPROVAL_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -146,9 +152,34 @@ struct TenantState {
     tasks: BTreeMap<TaskId, Task>,
     task_keys: BTreeMap<String, TaskId>,
     task_events: BTreeMap<TaskId, Vec<TaskEvent>>,
+    #[serde(default)]
+    approvals: BTreeMap<ApprovalId, StoredApproval>,
     #[serde(skip)]
     task_event_senders: BTreeMap<TaskId, broadcast::Sender<TaskEvent>>,
     triggers: BTreeMap<TriggerId, Trigger>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredApproval {
+    approval: PendingApproval,
+    checkpoint: serde_json::Value,
+    revision: RevisionSpec,
+    toolset: Option<CompiledToolset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution: Option<ResolveApproval>,
+    #[serde(default)]
+    claimed: bool,
+}
+
+/// Credential-free durable continuation returned only after tenant-scoped authorization.
+#[derive(Debug, Clone)]
+pub struct ApprovalContinuation {
+    pub approval: PendingApproval,
+    pub checkpoint: serde_json::Value,
+    pub revision: RevisionSpec,
+    pub toolset: Option<CompiledToolset>,
+    pub resolution: ResolveApproval,
 }
 
 #[derive(Clone)]
@@ -178,7 +209,8 @@ impl Application {
         }
     }
 
-    /// Open credential-free durable state and recover interrupted attempts as failed evidence.
+    /// Open credential-free durable state, preserving approval checkpoints and closing other
+    /// interrupted attempts as failed evidence.
     pub fn open(
         catalog: Arc<dyn ConnectorCatalog>,
         path: impl Into<PathBuf>,
@@ -682,50 +714,187 @@ impl Application {
         )
     }
 
-    pub fn mark_task_awaiting_approval(
+    pub fn suspend_task_for_approval(
         &self,
         tenant_id: &TenantId,
+        plan: &TaskExecutionPlan,
         approval: &PendingApproval,
+        checkpoint: serde_json::Value,
     ) -> Result<(), ApplicationError> {
-        self.transition_task(
-            tenant_id,
+        if serde_json::to_vec(&checkpoint).map_or(true, |encoded| {
+            encoded.len() > MAX_APPROVAL_CHECKPOINT_BYTES
+        }) {
+            return Err(ApplicationError::StatePersistence);
+        }
+        if plan.task.id != approval.task_id
+            || plan.task.attempt_id != approval.attempt_id
+            || plan.task.tenant_id != *tenant_id
+        {
+            return Err(ApplicationError::TaskNotFound);
+        }
+        let mut state = self.lock_state()?;
+        let tenant = state
+            .tenants
+            .get_mut(tenant_id)
+            .ok_or(ApplicationError::TaskNotFound)?;
+        require_attempt(tenant, &approval.task_id, &approval.attempt_id)?;
+        tenant
+            .approvals
+            .retain(|_, stored| stored.approval.task_id != approval.task_id);
+        if tenant
+            .approvals
+            .insert(
+                approval.id.clone(),
+                StoredApproval {
+                    approval: approval.clone(),
+                    checkpoint,
+                    revision: plan.revision.clone(),
+                    toolset: plan.toolset.clone(),
+                    resolution: None,
+                    claimed: false,
+                },
+            )
+            .is_some()
+        {
+            return Err(ApplicationError::ApprovalConflict);
+        }
+        let task = tenant
+            .tasks
+            .get_mut(&approval.task_id)
+            .ok_or(ApplicationError::TaskNotFound)?;
+        task.status = TaskStatus::AwaitingApproval;
+        append_event(
+            tenant,
             &approval.task_id,
             &approval.attempt_id,
             approval.requested_at_ms,
-            TaskStatus::AwaitingApproval,
             TaskEventKind::ApprovalRequested {
                 approval_id: approval.id.clone(),
                 call_id: approval.call_id.clone(),
                 operation_ref: approval.operation_ref.clone(),
                 connection_ref: approval.connection_ref.clone(),
             },
-            None,
-            None,
-        )
+        )?;
+        self.persist(&state)
+    }
+
+    pub fn list_task_approvals(
+        &self,
+        context: &TrustedRequestContext,
+        task_id: &TaskId,
+    ) -> Result<Vec<PendingApproval>, ApplicationError> {
+        context.require(TASKS_SUBMIT)?;
+        let state = self.lock_state()?;
+        let tenant = tenant(&state, context).ok_or(ApplicationError::TaskNotFound)?;
+        if !tenant
+            .tasks
+            .get(task_id)
+            .is_some_and(|task| task_owned_by(task, context))
+        {
+            return Err(ApplicationError::TaskNotFound);
+        }
+        Ok(tenant
+            .approvals
+            .values()
+            .filter(|stored| &stored.approval.task_id == task_id)
+            .map(|stored| stored.approval.clone())
+            .collect())
     }
 
     pub fn resolve_task_approval(
         &self,
-        tenant_id: &TenantId,
+        context: &TrustedRequestContext,
         task_id: &TaskId,
-        attempt_id: &AttemptId,
+        approval_id: &ApprovalId,
         at_ms: u64,
-        approval_id: agent_platform_core::ApprovalId,
-        approved: bool,
-    ) -> Result<(), ApplicationError> {
-        self.transition_task(
-            tenant_id,
-            task_id,
-            attempt_id,
-            at_ms,
-            TaskStatus::Running,
-            TaskEventKind::ApprovalResolved {
-                approval_id,
-                approved,
-            },
-            None,
-            None,
-        )
+        resolution: &ResolveApproval,
+    ) -> Result<PendingApproval, ApplicationError> {
+        context.require(TASKS_SUBMIT)?;
+        resolution.validate()?;
+        let mut state = self.lock_state()?;
+        let tenant = state
+            .tenants
+            .get_mut(context.authority.tenant_id())
+            .ok_or(ApplicationError::TaskNotFound)?;
+        if !tenant
+            .tasks
+            .get(task_id)
+            .is_some_and(|task| task_owned_by(task, context))
+        {
+            return Err(ApplicationError::TaskNotFound);
+        }
+        let stored = tenant
+            .approvals
+            .get_mut(approval_id)
+            .filter(|stored| &stored.approval.task_id == task_id)
+            .ok_or(ApplicationError::ApprovalNotFound)?;
+        let newly_resolved = match stored.resolution.as_ref() {
+            None => {
+                stored.resolution = Some(resolution.clone());
+                true
+            }
+            Some(existing) if existing == resolution => false,
+            Some(_) => return Err(ApplicationError::ApprovalConflict),
+        };
+        let approval = stored.approval.clone();
+        if newly_resolved {
+            append_event(
+                tenant,
+                task_id,
+                &approval.attempt_id,
+                at_ms,
+                TaskEventKind::ApprovalResolved {
+                    approval_id: approval_id.clone(),
+                    approved: matches!(resolution, ResolveApproval::Approve { .. }),
+                },
+            )?;
+        }
+        self.persist(&state)?;
+        Ok(approval)
+    }
+
+    /// Atomically claims a persisted decision for one worker. Claims are cleared on restart.
+    pub fn claim_task_approval(
+        &self,
+        context: &TrustedRequestContext,
+        task_id: &TaskId,
+        approval_id: &ApprovalId,
+    ) -> Result<Option<ApprovalContinuation>, ApplicationError> {
+        context.require(TASKS_SUBMIT)?;
+        let mut state = self.lock_state()?;
+        let tenant = state
+            .tenants
+            .get_mut(context.authority.tenant_id())
+            .ok_or(ApplicationError::TaskNotFound)?;
+        if !tenant
+            .tasks
+            .get(task_id)
+            .is_some_and(|task| task_owned_by(task, context))
+        {
+            return Err(ApplicationError::TaskNotFound);
+        }
+        let stored = tenant
+            .approvals
+            .get_mut(approval_id)
+            .filter(|stored| &stored.approval.task_id == task_id)
+            .ok_or(ApplicationError::ApprovalNotFound)?;
+        let resolution = stored
+            .resolution
+            .clone()
+            .ok_or(ApplicationError::ApprovalConflict)?;
+        if stored.claimed {
+            return Ok(None);
+        }
+        stored.claimed = true;
+        let continuation = ApprovalContinuation {
+            approval: stored.approval.clone(),
+            checkpoint: stored.checkpoint.clone(),
+            revision: stored.revision.clone(),
+            toolset: stored.toolset.clone(),
+            resolution,
+        };
+        self.persist(&state)?;
+        Ok(Some(continuation))
     }
 
     pub fn append_task_text(
@@ -825,6 +994,9 @@ impl Application {
         task.failure = failure;
         if matches!(status, TaskStatus::Succeeded | TaskStatus::Failed) {
             task.completed_at_ms = Some(at_ms);
+            tenant
+                .approvals
+                .retain(|_, stored| &stored.approval.task_id != task_id);
         }
         append_event(tenant, task_id, attempt_id, at_ms, event)?;
         self.persist(&state)
@@ -945,14 +1117,19 @@ fn recover_interrupted_tasks(
     recovered_at_ms: u64,
 ) -> Result<(), ApplicationError> {
     for tenant in state.tenants.values_mut() {
+        for stored in tenant.approvals.values_mut() {
+            stored.claimed = false;
+        }
         let interrupted = tenant
             .tasks
             .values()
             .filter(|task| {
-                matches!(
-                    task.status,
-                    TaskStatus::Accepted | TaskStatus::Running | TaskStatus::AwaitingApproval
-                )
+                matches!(task.status, TaskStatus::Accepted | TaskStatus::Running)
+                    || (task.status == TaskStatus::AwaitingApproval
+                        && !tenant.approvals.values().any(|stored| {
+                            stored.approval.task_id == task.id
+                                && stored.approval.attempt_id == task.attempt_id
+                        }))
             })
             .map(|task| (task.id.clone(), task.attempt_id.clone()))
             .collect::<Vec<_>>();
@@ -1351,6 +1528,110 @@ mod tests {
                 .sequence,
             3
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn approval_checkpoint_decision_and_exact_plan_survive_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent-platform.json");
+        let context = context("tenant-one", 10);
+        let app = Application::open(Arc::new(EmptyCatalog), &path, 10).unwrap();
+        let (agent, _) = active_agent(&app, &context);
+        let attempt_id = AttemptId::new("atm_approval").unwrap();
+        let admission = app
+            .admit_task(
+                &context,
+                SubmitTask {
+                    agent_id: agent.id.clone(),
+                    idempotency_key: "approval-task".to_owned(),
+                    input: serde_json::json!({"prompt": "change it"}),
+                },
+                attempt_id.clone(),
+            )
+            .unwrap();
+        let plan = admission.plan;
+        app.mark_task_running(
+            &plan.task.tenant_id,
+            &plan.task.id,
+            &plan.task.attempt_id,
+            11,
+        )
+        .unwrap();
+        let approval = PendingApproval {
+            id: ApprovalId::new("apr_one").unwrap(),
+            task_id: plan.task.id.clone(),
+            attempt_id,
+            call_id: "call-one".to_owned(),
+            tool_name: "repository_write".to_owned(),
+            operation_ref: "repository.write".to_owned(),
+            connection_ref: "repository".to_owned(),
+            description_ref: "description-one".to_owned(),
+            input: serde_json::json!({"path": "README.md"}),
+            context: agent_platform_core::ConnectorOwnerContext {
+                tenant_id: plan.task.tenant_id.clone(),
+                agent_id: agent.id,
+                agent_revision: plan.task.agent_revision,
+                authority_snapshot_id: plan.task.request_id.clone(),
+                authority_snapshot_sha256: "a".repeat(64),
+            },
+            requested_at_ms: 12,
+        };
+        let checkpoint = serde_json::json!({
+            "format": "harness.approval-checkpoint/1",
+            "opaque": [1, 2, 3]
+        });
+        app.suspend_task_for_approval(&plan.task.tenant_id, &plan, &approval, checkpoint.clone())
+            .unwrap();
+        assert_eq!(
+            app.list_task_approvals(&context, &plan.task.id).unwrap(),
+            vec![approval.clone()]
+        );
+        let resolution = ResolveApproval::Approve {
+            approval_evidence_ref: "approval-proof-one".to_owned(),
+        };
+        app.resolve_task_approval(&context, &plan.task.id, &approval.id, 13, &resolution)
+            .unwrap();
+        let claimed = app
+            .claim_task_approval(&context, &plan.task.id, &approval.id)
+            .unwrap()
+            .expect("first worker claims the decision");
+        assert_eq!(claimed.checkpoint, checkpoint);
+        assert_eq!(claimed.revision, plan.revision);
+        assert_eq!(claimed.toolset, plan.toolset);
+        assert_eq!(claimed.resolution, resolution);
+        assert!(
+            app.claim_task_approval(&context, &plan.task.id, &approval.id)
+                .unwrap()
+                .is_none(),
+            "a live decision has one worker"
+        );
+        drop(app);
+
+        let reopened = Application::open(Arc::new(EmptyCatalog), &path, 20).unwrap();
+        let task = reopened.get_task(&context, &plan.task.id).unwrap();
+        assert_eq!(task.status, TaskStatus::AwaitingApproval);
+        assert!(task.failure.is_none());
+        let recovered = reopened
+            .claim_task_approval(&context, &plan.task.id, &approval.id)
+            .unwrap()
+            .expect("restart clears only the transient worker claim");
+        assert_eq!(recovered.approval, approval);
+        assert_eq!(recovered.checkpoint, checkpoint);
+        assert_eq!(recovered.resolution, resolution);
+        let events = reopened
+            .subscribe_task_events(&context, &plan.task.id)
+            .unwrap()
+            .backlog;
+        assert_eq!(events.len(), 4);
+        assert!(matches!(
+            events[2].event,
+            TaskEventKind::ApprovalRequested { .. }
+        ));
+        assert!(matches!(
+            events[3].event,
+            TaskEventKind::ApprovalResolved { .. }
+        ));
     }
 
     #[tokio::test]

@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Condvar, LazyLock, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_platform_api::{
@@ -11,7 +10,9 @@ use agent_platform_api::{
     ProblemDocument, REVISIONS_PATH, TASK_APPROVAL_PATH, TASK_APPROVALS_PATH, TASK_EVENTS_PATH,
     TASK_PATH, TASKS_PATH, TRIGGERS_PATH,
 };
-use agent_platform_app::{Application, ApplicationError, TaskExecutionPlan, TrustedRequestContext};
+use agent_platform_app::{
+    Application, ApplicationError, ApprovalContinuation, TaskExecutionPlan, TrustedRequestContext,
+};
 use agent_platform_auth::{AttemptConnectorAccess, CredentialVerifier, UserModelLease, operation};
 use agent_platform_core::{
     ActivateRevision, AgentId, ApprovalId, AttemptId, CapabilityProfileId, ConnectorOwnerContext,
@@ -20,11 +21,12 @@ use agent_platform_core::{
     UpdateCapabilityProfile,
 };
 use agent_platform_harness::{
-    ApprovalDecision, ApprovalPort, ConnectorApprovalEvidence, UserModelExecution, UserModelRunner,
+    ApprovalDecision, ApprovalPort, ConnectorApprovalEvidence, ExecutionError, UserModelExecution,
+    UserModelRunOutcome, UserModelRunner,
 };
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Extension, Path, State};
-use axum::http::{Request, StatusCode, header};
+use axum::http::{HeaderMap, Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -43,7 +45,6 @@ pub struct HttpState {
     app: Application,
     verifier: Arc<dyn CredentialVerifier>,
     runner: Option<UserModelRunner>,
-    approvals: Arc<ApprovalRegistry>,
 }
 
 impl HttpState {
@@ -52,7 +53,6 @@ impl HttpState {
             app,
             verifier,
             runner: None,
-            approvals: Arc::new(ApprovalRegistry::default()),
         }
     }
 
@@ -77,109 +77,30 @@ struct ApprovalTarget {
     description: String,
 }
 
-#[derive(Debug)]
-struct ApprovalEntry {
-    approval: PendingApproval,
-    resolution: Option<ResolveApproval>,
-}
+#[derive(Clone, Default)]
+struct DeferredApprovalCapture(Arc<Mutex<Option<PendingApproval>>>);
 
-#[derive(Debug, Default)]
-struct ApprovalRegistry {
-    entries: Mutex<BTreeMap<ApprovalId, ApprovalEntry>>,
-    changed: Condvar,
-}
-
-impl ApprovalRegistry {
-    fn publish_and_wait(
-        &self,
-        approval: PendingApproval,
-        publish: impl FnOnce() -> Result<(), ()>,
-    ) -> Result<ResolveApproval, ()> {
-        let approval_id = approval.id.clone();
-        let mut entries = self.entries.lock().map_err(|_| ())?;
-        if entries
-            .insert(
-                approval_id.clone(),
-                ApprovalEntry {
-                    approval,
-                    resolution: None,
-                },
-            )
-            .is_some()
-        {
+impl DeferredApprovalCapture {
+    fn publish(&self, approval: PendingApproval) -> Result<(), ()> {
+        let mut pending = self.0.lock().map_err(|_| ())?;
+        if pending.is_some() {
             return Err(());
         }
-        if publish().is_err() {
-            entries.remove(&approval_id);
-            return Err(());
-        }
-        let deadline = std::time::Instant::now() + Duration::from_mins(30);
-        loop {
-            if let Some(resolution) = entries
-                .get(&approval_id)
-                .and_then(|entry| entry.resolution.clone())
-            {
-                entries.remove(&approval_id);
-                return Ok(resolution);
-            }
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                entries.remove(&approval_id);
-                return Err(());
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let (next, timeout) = self
-                .changed
-                .wait_timeout(entries, remaining)
-                .map_err(|_| ())?;
-            entries = next;
-            if timeout.timed_out() {
-                entries.remove(&approval_id);
-                return Err(());
-            }
-        }
+        *pending = Some(approval);
+        Ok(())
     }
 
-    fn list(&self, task_id: &TaskId) -> Result<Vec<PendingApproval>, ()> {
-        let entries = self.entries.lock().map_err(|_| ())?;
-        Ok(entries
-            .values()
-            .filter(|entry| &entry.approval.task_id == task_id && entry.resolution.is_none())
-            .map(|entry| entry.approval.clone())
-            .collect())
-    }
-
-    fn resolve(
-        &self,
-        task_id: &TaskId,
-        attempt_id: &AttemptId,
-        approval_id: &ApprovalId,
-        resolution: ResolveApproval,
-    ) -> Result<PendingApproval, ()> {
-        let mut entries = self.entries.lock().map_err(|_| ())?;
-        let entry = entries.get_mut(approval_id).ok_or(())?;
-        if &entry.approval.task_id != task_id
-            || &entry.approval.attempt_id != attempt_id
-            || entry.resolution.is_some()
-        {
-            return Err(());
-        }
-        let approval = entry.approval.clone();
-        entry.resolution = Some(resolution);
-        self.changed.notify_all();
-        Ok(approval)
+    fn take(&self) -> Result<PendingApproval, ()> {
+        self.0.lock().map_err(|_| ())?.take().ok_or(())
     }
 }
 
 struct AttemptApprover {
-    app: Application,
-    registry: Arc<ApprovalRegistry>,
-    evidence: ConnectorApprovalEvidence,
-    tenant_id: TenantId,
     task_id: TaskId,
     attempt_id: AttemptId,
     context: ConnectorOwnerContext,
     targets: BTreeMap<String, ApprovalTarget>,
+    deferred: DeferredApprovalCapture,
 }
 
 impl ApprovalPort for AttemptApprover {
@@ -209,30 +130,10 @@ impl ApprovalPort for AttemptApprover {
             context: self.context.clone(),
             requested_at_ms,
         };
-        let resolution = self.registry.publish_and_wait(pending.clone(), || {
-            self.app
-                .mark_task_awaiting_approval(&self.tenant_id, &pending)
-                .map_err(|_| ())
-        });
-        let approved = matches!(resolution, Ok(ResolveApproval::Approve { .. }));
-        let _ = self.app.resolve_task_approval(
-            &self.tenant_id,
-            &self.task_id,
-            &self.attempt_id,
-            now_ms(),
-            approval_id,
-            approved,
-        );
-        match resolution {
-            Ok(ResolveApproval::Approve {
-                approval_evidence_ref,
-            }) => match self.evidence.approve(call_id, approval_evidence_ref) {
-                Ok(()) => ApprovalDecision::Approved,
-                Err(_) => ApprovalDecision::denied("approval evidence handoff is unavailable"),
-            },
-            Ok(ResolveApproval::Deny { reason }) => ApprovalDecision::denied(reason),
-            Err(()) => ApprovalDecision::denied("the human approval request expired"),
+        if self.deferred.publish(pending).is_err() {
+            return ApprovalDecision::denied("the approval checkpoint handoff is unavailable");
         }
+        ApprovalDecision::deferred(approval_id.to_string())
     }
 }
 
@@ -541,7 +442,6 @@ async fn submit_task(
             admission.plan.clone(),
             lease,
             attempt.connector_access,
-            state.approvals.clone(),
         );
     }
     (StatusCode::ACCEPTED, Json(admission.plan.task)).into_response()
@@ -575,22 +475,16 @@ async fn list_task_approvals(
         Ok(task_id) => task_id,
         Err(error) => return application_error(&ApplicationError::Invalid(error)),
     };
-    if let Err(error) = state.app.get_task_for_approval(&context, &task_id) {
-        return application_error(&error);
-    }
-    match state.approvals.list(&task_id) {
-        Ok(approvals) => (StatusCode::OK, Json(approvals)).into_response(),
-        Err(()) => problem(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "approval_state_unavailable",
-            "task approval state is unavailable",
-        ),
-    }
+    result(
+        StatusCode::OK,
+        state.app.list_task_approvals(&context, &task_id),
+    )
 }
 
 async fn resolve_task_approval(
     State(state): State<HttpState>,
     Extension(context): Extension<TrustedRequestContext>,
+    headers: HeaderMap,
     Path((task_id, approval_id)): Path<(String, String)>,
     Json(resolution): Json<ResolveApproval>,
 ) -> Response {
@@ -616,17 +510,72 @@ async fn resolve_task_approval(
             "the task is not awaiting approval",
         );
     }
-    match state
-        .approvals
-        .resolve(&task_id, &task.attempt_id, &approval_id, resolution)
+    let approval = match state.app.resolve_task_approval(
+        &context,
+        &task_id,
+        &approval_id,
+        now_ms(),
+        &resolution,
+    ) {
+        Ok(approval) => approval,
+        Err(error) => return application_error(&error),
+    };
+    let Some(runner) = state.runner.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "execution_unavailable",
+            "hosted execution is not configured",
+        );
+    };
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    let authenticated = match state
+        .verifier
+        .verify(authorization, Some(&task.attempt_id))
+        .await
     {
-        Ok(approval) => (StatusCode::ACCEPTED, Json(approval)).into_response(),
-        Err(()) => problem(
-            StatusCode::NOT_FOUND,
-            "approval_not_found",
-            "the pending approval was not found",
-        ),
-    }
+        Ok(authenticated) if authenticated.authority() == context.authority() => authenticated,
+        Ok(_) => {
+            return problem(
+                StatusCode::UNAUTHORIZED,
+                "continuation_authority_changed",
+                "the continuation authority differs from the approval authority",
+            );
+        }
+        Err(error) => {
+            return problem(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "continuation_authority_unavailable",
+                error.reason(),
+            );
+        }
+    };
+    let (_, lease, connector_access) = authenticated.into_parts();
+    let Some(lease) = lease else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "model_lease_unavailable",
+            "the approved attempt could not reacquire its user-bound model lease",
+        );
+    };
+    let continuation = match state
+        .app
+        .claim_task_approval(&context, &task_id, &approval_id)
+    {
+        Ok(Some(continuation)) => continuation,
+        Ok(None) => return (StatusCode::ACCEPTED, Json(approval)).into_response(),
+        Err(error) => return application_error(&error),
+    };
+    spawn_approval_resume(
+        state.app.clone(),
+        runner,
+        task,
+        continuation,
+        lease,
+        connector_access,
+    );
+    (StatusCode::ACCEPTED, Json(approval)).into_response()
 }
 
 async fn stream_task_events(
@@ -701,7 +650,6 @@ fn spawn_execution(
     plan: TaskExecutionPlan,
     lease: Arc<UserModelLease>,
     connector_access: Option<Arc<AttemptConnectorAccess>>,
-    approvals: Arc<ApprovalRegistry>,
 ) {
     tokio::spawn(async move {
         let tenant_id = plan.task.tenant_id.clone();
@@ -713,36 +661,8 @@ fn spawn_execution(
         {
             return;
         }
-        let event_app = app.clone();
-        let event_tenant = tenant_id.clone();
-        let event_task = task_id.clone();
-        let event_attempt = attempt_id.clone();
-        let emit = Arc::new(move |text: String| {
-            let _ = event_app.append_task_text(
-                &event_tenant,
-                &event_task,
-                &event_attempt,
-                now_ms(),
-                text,
-            );
-        });
+        let emit = task_text_sink(&app, &tenant_id, &task_id, &attempt_id);
         let approval_evidence = ConnectorApprovalEvidence::default();
-        let targets = plan.toolset.as_ref().map_or_else(BTreeMap::new, |toolset| {
-            toolset
-                .capabilities
-                .iter()
-                .map(|capability| {
-                    (
-                        capability.tool.name.to_string(),
-                        ApprovalTarget {
-                            operation: capability.operation_ref.clone(),
-                            connection: capability.connection_ref.clone(),
-                            description: capability.description_ref.clone(),
-                        },
-                    )
-                })
-                .collect()
-        });
         let approval_context = ConnectorOwnerContext {
             tenant_id: tenant_id.clone(),
             agent_id: plan.task.agent_id.clone(),
@@ -750,57 +670,215 @@ fn spawn_execution(
             authority_snapshot_id: plan.task.request_id.clone(),
             authority_snapshot_sha256: authority_snapshot_sha256(&plan),
         };
+        let deferred = DeferredApprovalCapture::default();
         let approver = AttemptApprover {
-            app: app.clone(),
-            registry: approvals,
-            evidence: approval_evidence.clone(),
-            tenant_id: tenant_id.clone(),
             task_id: task_id.clone(),
             attempt_id: attempt_id.clone(),
             context: approval_context.clone(),
-            targets,
+            targets: approval_targets(&plan),
+            deferred: deferred.clone(),
         };
-        let connector_context = operation::OwnerContext {
-            tenant_id: approval_context.tenant_id.to_string(),
-            agent_id: approval_context.agent_id.to_string(),
-            agent_revision: approval_context.agent_revision,
-            authority_snapshot_id: approval_context.authority_snapshot_id.to_string(),
-            authority_snapshot_sha256: approval_context.authority_snapshot_sha256,
-        };
-        match runner
+        let result = runner
             .execute(
                 UserModelExecution {
-                    revision: plan.revision,
-                    toolset: plan.toolset,
-                    input: plan.task.input,
+                    revision: plan.revision.clone(),
+                    toolset: plan.toolset.clone(),
+                    input: plan.task.input.clone(),
                     lease,
                     connector_access,
                     attempt_id: attempt_id.clone(),
-                    connector_context,
+                    connector_context: connector_operation_context(&approval_context),
                     approval_evidence,
                     approvals: Box::new(approver),
                 },
                 emit,
             )
-            .await
-        {
-            Ok(output) => {
-                let _ = app.succeed_task(&tenant_id, &task_id, &attempt_id, now_ms(), output);
+            .await;
+        settle_execution(&app, &plan, &deferred, result);
+    });
+}
+
+fn spawn_approval_resume(
+    app: Application,
+    runner: UserModelRunner,
+    task: agent_platform_core::Task,
+    continuation: ApprovalContinuation,
+    lease: Arc<UserModelLease>,
+    connector_access: Option<Arc<AttemptConnectorAccess>>,
+) {
+    tokio::spawn(async move {
+        let plan = TaskExecutionPlan {
+            task,
+            revision: continuation.revision,
+            toolset: continuation.toolset,
+        };
+        let tenant_id = plan.task.tenant_id.clone();
+        let task_id = plan.task.id.clone();
+        let attempt_id = plan.task.attempt_id.clone();
+        let Ok(checkpoint) = serde_json::from_value(continuation.checkpoint) else {
+            fail_execution(
+                &app,
+                &plan,
+                "approval_checkpoint_invalid",
+                "the persisted Harness approval checkpoint is invalid",
+            );
+            return;
+        };
+        let evidence = ConnectorApprovalEvidence::default();
+        let decision = match continuation.resolution {
+            ResolveApproval::Approve {
+                approval_evidence_ref,
+            } => {
+                if evidence
+                    .approve(continuation.approval.call_id.clone(), approval_evidence_ref)
+                    .is_err()
+                {
+                    fail_execution(
+                        &app,
+                        &plan,
+                        "approval_evidence_unavailable",
+                        "the exact Connector approval evidence could not be restored",
+                    );
+                    return;
+                }
+                ApprovalDecision::Approved
             }
-            Err(error) => {
-                let _ = app.fail_task(
-                    &tenant_id,
-                    &task_id,
-                    &attempt_id,
-                    now_ms(),
-                    TaskFailure {
-                        code: error.code().to_owned(),
-                        message: error.to_string(),
-                    },
+            ResolveApproval::Deny { reason } => ApprovalDecision::denied(reason),
+        };
+        let context = continuation.approval.context;
+        let deferred = DeferredApprovalCapture::default();
+        let approver = AttemptApprover {
+            task_id: task_id.clone(),
+            attempt_id: attempt_id.clone(),
+            context: context.clone(),
+            targets: approval_targets(&plan),
+            deferred: deferred.clone(),
+        };
+        let emit = task_text_sink(&app, &tenant_id, &task_id, &attempt_id);
+        let result = runner
+            .resume_approval(
+                UserModelExecution {
+                    revision: plan.revision.clone(),
+                    toolset: plan.toolset.clone(),
+                    input: plan.task.input.clone(),
+                    lease,
+                    connector_access,
+                    attempt_id,
+                    connector_context: connector_operation_context(&context),
+                    approval_evidence: evidence,
+                    approvals: Box::new(approver),
+                },
+                checkpoint,
+                decision,
+                emit,
+            )
+            .await;
+        settle_execution(&app, &plan, &deferred, result);
+    });
+}
+
+fn settle_execution(
+    app: &Application,
+    plan: &TaskExecutionPlan,
+    deferred: &DeferredApprovalCapture,
+    result: Result<UserModelRunOutcome, ExecutionError>,
+) {
+    match result {
+        Ok(UserModelRunOutcome::Completed { output }) => {
+            let _ = app.succeed_task(
+                &plan.task.tenant_id,
+                &plan.task.id,
+                &plan.task.attempt_id,
+                now_ms(),
+                output,
+            );
+        }
+        Ok(UserModelRunOutcome::AwaitingApproval { checkpoint }) => {
+            let suspended = deferred.take().and_then(|approval| {
+                serde_json::to_value(checkpoint)
+                    .map(|checkpoint| (approval, checkpoint))
+                    .map_err(|_| ())
+            });
+            let Ok((approval, checkpoint)) = suspended else {
+                fail_execution(
+                    app,
+                    plan,
+                    "approval_checkpoint_unavailable",
+                    "Harness suspended without a complete approval checkpoint",
+                );
+                return;
+            };
+            if app
+                .suspend_task_for_approval(&plan.task.tenant_id, plan, &approval, checkpoint)
+                .is_err()
+            {
+                fail_execution(
+                    app,
+                    plan,
+                    "approval_checkpoint_persistence_failed",
+                    "the approval checkpoint could not be persisted",
                 );
             }
         }
-    });
+        Err(error) => fail_execution(app, plan, error.code(), &error.to_string()),
+    }
+}
+
+fn fail_execution(app: &Application, plan: &TaskExecutionPlan, code: &str, message: &str) {
+    let _ = app.fail_task(
+        &plan.task.tenant_id,
+        &plan.task.id,
+        &plan.task.attempt_id,
+        now_ms(),
+        TaskFailure {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        },
+    );
+}
+
+fn task_text_sink(
+    app: &Application,
+    tenant_id: &TenantId,
+    task_id: &TaskId,
+    attempt_id: &AttemptId,
+) -> Arc<dyn Fn(String) + Send + Sync> {
+    let app = app.clone();
+    let tenant_id = tenant_id.clone();
+    let task_id = task_id.clone();
+    let attempt_id = attempt_id.clone();
+    Arc::new(move |text: String| {
+        let _ = app.append_task_text(&tenant_id, &task_id, &attempt_id, now_ms(), text);
+    })
+}
+
+fn approval_targets(plan: &TaskExecutionPlan) -> BTreeMap<String, ApprovalTarget> {
+    plan.toolset.as_ref().map_or_else(BTreeMap::new, |toolset| {
+        toolset
+            .capabilities
+            .iter()
+            .map(|capability| {
+                (
+                    capability.tool.name.to_string(),
+                    ApprovalTarget {
+                        operation: capability.operation_ref.clone(),
+                        connection: capability.connection_ref.clone(),
+                        description: capability.description_ref.clone(),
+                    },
+                )
+            })
+            .collect()
+    })
+}
+
+fn connector_operation_context(context: &ConnectorOwnerContext) -> operation::OwnerContext {
+    operation::OwnerContext {
+        tenant_id: context.tenant_id.to_string(),
+        agent_id: context.agent_id.to_string(),
+        agent_revision: context.agent_revision,
+        authority_snapshot_id: context.authority_snapshot_id.to_string(),
+        authority_snapshot_sha256: context.authority_snapshot_sha256.clone(),
+    }
 }
 
 fn authority_snapshot_sha256(plan: &TaskExecutionPlan) -> String {
@@ -869,10 +947,12 @@ fn application_error(error: &ApplicationError) -> Response {
         ApplicationError::AgentNotFound
         | ApplicationError::RevisionNotFound
         | ApplicationError::CapabilityProfileNotFound
-        | ApplicationError::TaskNotFound => (StatusCode::NOT_FOUND, "not_found"),
+        | ApplicationError::TaskNotFound
+        | ApplicationError::ApprovalNotFound => (StatusCode::NOT_FOUND, "not_found"),
         ApplicationError::ActiveRevisionConflict { .. }
         | ApplicationError::CapabilityProfileRevisionConflict { .. }
-        | ApplicationError::IdempotencyConflict => (StatusCode::CONFLICT, "conflict"),
+        | ApplicationError::IdempotencyConflict
+        | ApplicationError::ApprovalConflict => (StatusCode::CONFLICT, "conflict"),
         ApplicationError::NoActiveRevision | ApplicationError::Invalid(_) => {
             (StatusCode::UNPROCESSABLE_ENTITY, "invalid_request")
         }
@@ -1089,60 +1169,50 @@ mod tests {
     }
 
     #[test]
-    fn pending_approval_is_published_exactly_and_resolved_once() {
-        let registry = Arc::new(ApprovalRegistry::default());
-        let approval = PendingApproval {
-            id: ApprovalId::new("approval-one").unwrap(),
+    fn an_attempt_approver_defers_without_blocking_and_captures_the_exact_call() {
+        let deferred = DeferredApprovalCapture::default();
+        let context = ConnectorOwnerContext {
+            tenant_id: TenantId::new("tenant-one").unwrap(),
+            agent_id: AgentId::new("agent-one").unwrap(),
+            agent_revision: 1,
+            authority_snapshot_id: RequestId::new("request-one").unwrap(),
+            authority_snapshot_sha256: "a".repeat(64),
+        };
+        let mut approver = AttemptApprover {
             task_id: TaskId::new("task-one").unwrap(),
             attempt_id: AttemptId::new("attempt-one").unwrap(),
-            call_id: "call-one".to_owned(),
-            tool_name: "todo_create_item".to_owned(),
-            operation_ref: "todo.item.create".to_owned(),
-            connection_ref: "todo".to_owned(),
-            description_ref: "description-one".to_owned(),
-            input: json!({"list_id": "list-one", "title": "Ship it"}),
-            context: ConnectorOwnerContext {
-                tenant_id: TenantId::new("tenant-one").unwrap(),
-                agent_id: AgentId::new("agent-one").unwrap(),
-                agent_revision: 1,
-                authority_snapshot_id: RequestId::new("request-one").unwrap(),
-                authority_snapshot_sha256: "a".repeat(64),
-            },
-            requested_at_ms: 42,
+            context: context.clone(),
+            targets: BTreeMap::from([(
+                "todo_create_item".to_owned(),
+                ApprovalTarget {
+                    operation: "todo.item.create".to_owned(),
+                    connection: "todo".to_owned(),
+                    description: "description-one".to_owned(),
+                },
+            )]),
+            deferred: deferred.clone(),
         };
-        let (published_tx, published_rx) = std::sync::mpsc::channel();
-        let worker_registry = registry.clone();
-        let worker_approval = approval.clone();
-        let worker = std::thread::spawn(move || {
-            worker_registry
-                .publish_and_wait(worker_approval, || published_tx.send(()).map_err(|_| ()))
-        });
-        published_rx.recv().unwrap();
+        let spec = harness_wire::ToolSpec {
+            name: harness_wire::ToolName::new("todo_create_item").unwrap(),
+            description: "create a todo".to_owned(),
+            input_schema: json!({"type": "object"}),
+            approval: harness_wire::Approval::Required,
+            envelope: harness_wire::Envelope::default(),
+        };
+        let call = harness_wire::ToolCall {
+            call_id: harness_wire::CallId::new("call-one").unwrap(),
+            name: spec.name.clone(),
+            arguments: json!({"list_id": "list-one", "title": "Ship it"}),
+        };
 
-        assert_eq!(
-            registry.list(&approval.task_id).unwrap(),
-            vec![approval.clone()]
-        );
-        let decision = ResolveApproval::Approve {
-            approval_evidence_ref: "approval-proof-one".to_owned(),
-        };
-        assert_eq!(
-            registry
-                .resolve(
-                    &approval.task_id,
-                    &approval.attempt_id,
-                    &approval.id,
-                    decision.clone(),
-                )
-                .unwrap(),
-            approval
-        );
-        assert_eq!(worker.join().unwrap().unwrap(), decision);
-        assert!(
-            registry
-                .list(&TaskId::new("task-one").unwrap())
-                .unwrap()
-                .is_empty()
-        );
+        let decision = approver.decide(&call, &spec);
+        assert!(matches!(decision, ApprovalDecision::Deferred { .. }));
+        let approval = deferred.take().unwrap();
+        assert_eq!(approval.task_id.as_str(), "task-one");
+        assert_eq!(approval.attempt_id.as_str(), "attempt-one");
+        assert_eq!(approval.call_id, "call-one");
+        assert_eq!(approval.operation_ref, "todo.item.create");
+        assert_eq!(approval.input, call.arguments);
+        assert_eq!(approval.context, context);
     }
 }

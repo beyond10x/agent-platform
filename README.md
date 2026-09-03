@@ -16,11 +16,13 @@ registry-published packages.
 
 The current walking slice implements authenticated durable management of agents and revisions,
 deterministic Connector-operation to Harness-tool projection, idempotent task intake, and schedule or
-webhook trigger definitions. Its Harness adapter embeds Harness 0.10.0. User-bound Tasks run through
-an attempt-scoped Connector lease and stream ordered execution evidence over SSE. When `--state-path`
-is configured, accepted state is atomically snapshotted and recovered after a restart; interrupted
-attempts are closed with an explicit `execution_interrupted` result. It does not claim live Connector
-operation invocation, approvals or trigger delivery; those are separate AEP stories.
+webhook trigger definitions. User-bound Tasks run through an attempt-scoped Connector lease and
+stream ordered execution evidence over SSE. The adapter pins Harness 0.11 at the reviewed
+hosted-context and approval-checkpoint revision. When `--state-path` is
+configured, exact human approval checkpoints and decisions remain resumable with freshly verified
+attempt credentials; other interrupted attempts close with an explicit `execution_interrupted`
+result. Live Connector invocation is supported for configured hosted workers; trigger delivery
+remains a separate AEP story.
 
 ## Run the development service
 
@@ -65,14 +67,16 @@ materialized.
 | `GET/POST /v1/tasks` | list or idempotently admit asynchronous work |
 | `GET /v1/tasks/{task_id}` | read pinned task state |
 | `GET /v1/tasks/{task_id}/events` | stream ordered events for the admitted attempt as SSE |
+| `GET /v1/tasks/{task_id}/approvals` | list exact durable calls awaiting continuation |
+| `POST /v1/tasks/{task_id}/approvals/{approval_id}` | persist an exact decision and resume with freshly verified attempt authority |
 | `GET/POST /v1/triggers` | list or define schedule/webhook task sources |
 | `GET /livez` | unauthenticated process liveness |
 | `GET /openapi.json` | public deterministic OpenAPI 3.1 document |
 | `GET /docs/` | public Rust-built documentation website embedded in the binary |
 
 State remains process-local unless `--state-path` is configured. With it, agents, revisions,
-capability profiles, tasks, evidence and triggers survive restarts; work that was in flight is
-terminated explicitly rather than silently resumed.
+capability profiles, tasks, evidence, approval continuations and triggers survive restarts; only an
+exact persisted approval checkpoint is resumable, while other in-flight work terminates explicitly.
 Production Identity and Connector custody are external services; model credentials are redeemed by
 Harness only at the provider request boundary.
 
