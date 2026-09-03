@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.5"
+version = "0.6.6"
 edition = "2024"
 rust-version = "1.98"
 license = "LicenseRef-B10x-Proprietary"
@@ -34,10 +34,10 @@ agent-platform-openapi = { path = "crates/agent-platform-openapi" }
 agent-platform-docs = { path = "crates/agent-platform-docs" }
 agent-platform-http = { path = "crates/agent-platform-http" }
 agent-platform-client = { path = "crates/agent-platform-client" }
-agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", rev = "a90cb6cbe5a5cf6dd91bade6071df13b376947e3" }
-agentide-harness = { git = "https://github.com/beyond10x/agentide.git", rev = "a90cb6cbe5a5cf6dd91bade6071df13b376947e3" }
-workspace-client = { git = "https://github.com/beyond10x/workspace.git", rev = "7a52a0159bdfe069b866f05c5ca8eac2ce9197af" }
-workspace-core = { git = "https://github.com/beyond10x/workspace.git", rev = "7a52a0159bdfe069b866f05c5ca8eac2ce9197af" }
+agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", rev = "c25e73330fc130895d8f1538c9746858a265186b" }
+agentide-harness = { git = "https://github.com/beyond10x/agentide.git", rev = "c25e73330fc130895d8f1538c9746858a265186b" }
+workspace-client = { git = "https://github.com/beyond10x/workspace.git", rev = "0b7b13931fb26343545be4e97a387029b121901a" }
+workspace-core = { git = "https://github.com/beyond10x/workspace.git", rev = "0b7b13931fb26343545be4e97a387029b121901a" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
 # keeps this service from reinterpreting that boundary crate by crate.

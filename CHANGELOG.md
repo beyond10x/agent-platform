@@ -4,6 +4,12 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-09-03
+
+- Consume the exact AgentIDE 0.2.1 and Workspace 0.2.9 context handoff so DevCenter browser drafts,
+  authenticated sealing, Workspace actor-view refresh, and Harness tool binding use one Rust type
+  graph while retaining pre-turn `ActorView` validation.
+
 ## [0.6.5] — 2026-09-03
 
 - Consume AgentIDE 0.2.0, Workspace 0.2.8, and Harness 0.11.1 as exact released dependencies for
