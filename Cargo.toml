@@ -34,7 +34,7 @@ agent-platform-openapi = { path = "crates/agent-platform-openapi" }
 agent-platform-docs = { path = "crates/agent-platform-docs" }
 agent-platform-http = { path = "crates/agent-platform-http" }
 agent-platform-client = { path = "crates/agent-platform-client" }
-agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", rev = "39efb44984259d411bba7838efb4ad145806d97c" }
+agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", rev = "ed6250bb1f1a3ff56f3c5a6acffe11cbd4f07e20" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
 # keeps this service from reinterpreting that boundary crate by crate.
