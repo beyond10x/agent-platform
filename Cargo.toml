@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.6"
+version = "0.6.7"
 edition = "2024"
 rust-version = "1.98"
 license = "LicenseRef-B10x-Proprietary"
@@ -34,18 +34,18 @@ agent-platform-openapi = { path = "crates/agent-platform-openapi" }
 agent-platform-docs = { path = "crates/agent-platform-docs" }
 agent-platform-http = { path = "crates/agent-platform-http" }
 agent-platform-client = { path = "crates/agent-platform-client" }
-agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", rev = "c25e73330fc130895d8f1538c9746858a265186b" }
-agentide-harness = { git = "https://github.com/beyond10x/agentide.git", rev = "c25e73330fc130895d8f1538c9746858a265186b" }
-workspace-client = { git = "https://github.com/beyond10x/workspace.git", rev = "0b7b13931fb26343545be4e97a387029b121901a" }
-workspace-core = { git = "https://github.com/beyond10x/workspace.git", rev = "0b7b13931fb26343545be4e97a387029b121901a" }
+agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", tag = "0.2.1" }
+agentide-harness = { git = "https://github.com/beyond10x/agentide.git", tag = "0.2.1" }
+workspace-client = { git = "https://github.com/beyond10x/workspace.git", tag = "0.2.12" }
+workspace-core = { git = "https://github.com/beyond10x/workspace.git", tag = "0.2.12" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
 # keeps this service from reinterpreting that boundary crate by crate.
 harness-wire = { package = "b10x-harness-wire", git = "https://github.com/beyond10x/harness", rev = "0f2edfef9f6dc3333b9377a730dfb40aeff14351" }
 harness-loop = { package = "b10x-harness-loop", git = "https://github.com/beyond10x/harness", rev = "0f2edfef9f6dc3333b9377a730dfb40aeff14351" }
 harness-messages = { package = "b10x-harness-messages", git = "https://github.com/beyond10x/harness", rev = "0f2edfef9f6dc3333b9377a730dfb40aeff14351" }
-identity-client = { git = "ssh://git@github.com/beyond10x/identity.git", tag = "0.5.0" }
-connectors-client = { git = "ssh://git@github.com/beyond10x/connectors.git", tag = "v0.5.0" }
+identity-client = { git = "https://github.com/beyond10x/identity.git", tag = "0.5.6" }
+connectors-client = { git = "https://github.com/beyond10x/connectors.git", tag = "v0.5.6" }
 
 axum = "0.8"
 async-stream = "0.3"
