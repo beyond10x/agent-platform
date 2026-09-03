@@ -4,10 +4,14 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+- Delegate private runtime construction, signing, visibility enforcement and release announcement to
+  Devcenter's repository-owned promotion workflow instead of publishing from the public source
+  repository's package authority.
+
 ## [0.6.3] — 2026-09-03
 
-- Publish the repository-linked private runtime package with the scoped workflow token supported by
-  GHCR, removing the failed GitHub App-token bootstrap path and parallelizing architecture builds.
+- Prepare the fail-closed capability fixes for promotion through Devcenter's private runtime
+  package and parallelize the architecture builds.
 
 ## [0.6.2] — 2026-09-03
 
