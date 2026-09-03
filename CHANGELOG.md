@@ -4,6 +4,14 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-09-03
+
+- Consume AgentIDE 0.2.0, Workspace 0.2.8, and Harness 0.11.1 as exact released dependencies for
+  sealed actor views, context digests, attachment provenance, session-bound dispatch, and durable
+  approval continuation.
+- Validate the complete actor view before any hosted context or inventory is bound into a Harness
+  model turn, and keep malformed coordination state out of model input.
+
 ## [0.6.4] — 2026-09-03
 
 - Align the hosted coding boundary with AgentIDE 0.1.3 and Workspace 0.2.7 so actor views and

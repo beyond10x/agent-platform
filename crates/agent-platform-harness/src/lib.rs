@@ -8,7 +8,7 @@ use agent_platform_auth::{
 };
 use agent_platform_connectors::{CompiledCapability, CompiledToolset};
 use agent_platform_core::{AttemptId, ConversationInput, ConversationRole, RevisionSpec, TaskId};
-use agentide_contracts::{ActorView, ContextPack, SelectionKind};
+use agentide_contracts::{ActorView, ContextPack, SelectionKind, canonical_json_sha256};
 use agentide_harness::inventory_specs;
 use harness_loop::{
     AgentLoop, ApprovalCheckpoint, ContextCacheClass, ContextKind, ContextLayer, ContextPackage,
@@ -22,7 +22,6 @@ use harness_wire::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use workspace_core::{CodingActorViewRequest, CodingIntentInvocation};
 
 pub use harness_loop::{ApprovalDecision, ApprovalPort, LoopEvent};
@@ -263,6 +262,9 @@ async fn prepare_workspace(
         .actor_view(attempt_id, &coordinates.workspace_session_id, &request)
         .await
         .map_err(|_| ExecutionError::WorkspaceUnavailable)?;
+    initial
+        .validate()
+        .map_err(|_| ExecutionError::HarnessConfiguration)?;
     if initial.actor.attempt.as_deref() != Some(attempt_id.as_str()) {
         return Err(ExecutionError::WorkspaceUnavailable);
     }
@@ -303,6 +305,7 @@ impl TurnEnvironmentProvider for WorkspaceEnvironment {
         } else {
             self.fetch(request.turn)?
         };
+        view.validate().map_err(EnvironmentError::Invalid)?;
         if view.actor.attempt.as_deref() != Some(self.attempt_id.as_str()) {
             return Err(EnvironmentError::Invalid(
                 "Workspace returned an actor view for another attempt".into(),
@@ -335,9 +338,10 @@ fn stable_context_revision(context: &ContextPack) -> Result<String, EnvironmentE
     // Workspace's monotonic revision proves that a refresh happened. It is not part of the
     // semantic context identity: unchanged content must remain cacheable across model turns.
     stable_context.revision = 0;
-    let encoded = serde_json::to_vec(&stable_context)
-        .map_err(|error| EnvironmentError::Invalid(error.to_string()))?;
-    Ok(format!("sha256:{}", hex::encode(Sha256::digest(encoded))))
+    stable_context.digest.clear();
+    canonical_json_sha256(&stable_context)
+        .map(|digest| format!("sha256:{digest}"))
+        .map_err(|error| EnvironmentError::Invalid(error.to_string()))
 }
 
 impl WorkspaceEnvironment {
@@ -363,6 +367,7 @@ fn context_package(context: &ContextPack) -> Result<ContextPackage, EnvironmentE
     // Workspace's monotonic transport revision records the refresh. It must not make identical
     // actor context look changed to Harness on every model turn.
     metadata.revision = 0;
+    metadata.digest.clear();
     metadata.pins.clear();
     metadata.focused_selections.clear();
     let body = serde_json::to_string_pretty(&metadata)
@@ -889,7 +894,7 @@ mod tests {
     use std::sync::Mutex;
 
     use agent_platform_connectors::{CONNECTOR_OPERATION_CONTRACT, CompiledCapability};
-    use agentide_contracts::ContextSelection;
+    use agentide_contracts::{ActorContext, ActorKind, AttachmentProvenance, ContextSelection};
     use harness_loop::{LoopStop, VecLoopSink};
     use harness_wire::{
         AccessKind, Approval, CallId, Effect, Envelope, Idempotency, Item, Risk, StopReason,
@@ -945,24 +950,32 @@ mod tests {
     }
 
     fn context_with_selection(revision: u64) -> ContextPack {
-        let content = "fn selected() {}".to_owned();
-        ContextPack {
-            format: "agentide.context-pack/1".to_owned(),
+        let selection = ContextSelection::new(
+            "selection-one",
+            SelectionKind::Editor,
+            "src/parser.rs",
+            Some(4),
+            Some(4),
+            "fn selected() {}",
+            AttachmentProvenance {
+                format: "agentide.attachment-provenance/1".into(),
+                actor: ActorContext::new(ActorKind::Human, "person:owner").unwrap(),
+                source: "workspace.file-selection".into(),
+                source_revision: "a".repeat(40),
+                observed_at: "2026-09-03T12:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        let mut context = ContextPack {
+            format: "agentide.context-pack/2".to_owned(),
             objective: "Repair the parser".to_owned(),
             source_revision: "a".repeat(40),
-            focused_selections: vec![ContextSelection {
-                id: "selection-one".to_owned(),
-                kind: SelectionKind::Editor,
-                reference: "src/parser.rs".to_owned(),
-                start_line: Some(4),
-                end_line: Some(4),
-                sha256: hex::encode(Sha256::digest(content.as_bytes())),
-                content,
-                truncated: false,
-            }],
+            focused_selections: vec![selection],
             revision,
             ..ContextPack::default()
-        }
+        };
+        context.seal().unwrap();
+        context
     }
 
     #[test]
