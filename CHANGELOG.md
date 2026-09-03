@@ -4,6 +4,10 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-09-03
+
+- Align the hosted coding boundary with AgentIDE 0.1.3 and Workspace 0.2.7 so actor views and
+  deliberate prompt attachments share one released protocol type graph.
 - Allow hosted deployments to supply the Identity, Connectors, Workspace, and durable state inputs
   through explicit `AGENT_PLATFORM_*` environment variables while preserving the corresponding CLI
   flags.
