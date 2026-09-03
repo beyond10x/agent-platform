@@ -4,6 +4,11 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.7] — 2026-09-03
+
+- Align the execution plane with current Identity 0.5.6, Connectors 0.5.6, Workspace 0.2.12, and
+  AgentIDE 0.2.1 releases so hosted turns use one current first-party contract graph.
+
 ## [0.6.6] — 2026-09-03
 
 - Consume the exact AgentIDE 0.2.1 and Workspace 0.2.9 context handoff so DevCenter browser drafts,
