@@ -11,10 +11,14 @@ publish.workspace = true
 
 [dependencies]
 agent-platform-core.workspace = true
+agentide-contracts.workspace = true
 identity-client.workspace = true
 connectors-client.workspace = true
+workspace-client.workspace = true
+workspace-core.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 axum.workspace = true

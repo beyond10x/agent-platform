@@ -535,6 +535,13 @@ pub enum TaskEventKind {
     TextDelta {
         text: String,
     },
+    ContextChanged {
+        revision: String,
+    },
+    InventoryChanged {
+        revision: String,
+        published_tools: Vec<String>,
+    },
     ApprovalRequested {
         approval_id: ApprovalId,
         call_id: String,

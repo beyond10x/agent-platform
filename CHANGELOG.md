@@ -7,6 +7,9 @@ All notable operator-visible changes to this private service are recorded here.
 - Add a typed `coding_session_turn` conversation envelope that persists only Workspace and
   AgentIDE session references plus deliberate prompt attachments; actor context and intent
   inventory remain dynamically derived by Workspace for each model turn.
+- Execute hosted coding turns through the official Workspace client, bind each current AgentIDE
+  intent inventory as Harness tools, and persist context/inventory revision events alongside the
+  task journal without exposing the user's transient Identity session to task state or model input.
 - Delegate private runtime construction, signing, visibility enforcement and release announcement to
   Devcenter's repository-owned promotion workflow instead of publishing from the public source
   repository's package authority.

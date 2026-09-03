@@ -59,6 +59,7 @@ name = "agent-platform-auth"
 version = "0.6.3"
 dependencies = [
  "agent-platform-core",
+ "agentide-contracts",
  "axum",
  "connectors-client",
  "identity-client 0.5.0",
@@ -66,6 +67,9 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror",
  "tokio",
+ "workspace-client",
+ "workspace-core",
+ "zeroize",
 ]
 
 [[package]]
@@ -121,13 +125,18 @@ dependencies = [
  "agent-platform-auth",
  "agent-platform-connectors",
  "agent-platform-core",
+ "agentide-contracts",
+ "agentide-harness",
  "b10x-harness-loop",
  "b10x-harness-messages",
  "b10x-harness-wire",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror",
  "tokio",
+ "workspace-core",
 ]
 
 [[package]]
@@ -178,6 +187,37 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.11.0",
+ "thiserror",
+]
+
+[[package]]
+name = "agentide-core"
+version = "0.1.1"
+source = "git+https://github.com/beyond10x/agentide.git?rev=ed6250bb1f1a3ff56f3c5a6acffe11cbd4f07e20#ed6250bb1f1a3ff56f3c5a6acffe11cbd4f07e20"
+dependencies = [
+ "agentide-contracts",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
+ "ulid",
+]
+
+[[package]]
+name = "agentide-harness"
+version = "0.1.1"
+source = "git+https://github.com/beyond10x/agentide.git?rev=ed6250bb1f1a3ff56f3c5a6acffe11cbd4f07e20#ed6250bb1f1a3ff56f3c5a6acffe11cbd4f07e20"
+dependencies = [
+ "agentide-contracts",
+ "agentide-core",
+ "b10x-harness-credential",
+ "b10x-harness-loop",
+ "b10x-harness-messages",
+ "b10x-harness-responses",
+ "b10x-harness-wire",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -521,6 +561,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "b10x-harness-credential"
+version = "0.11.0"
+source = "git+https://github.com/beyond10x/harness?rev=c86bec0977fbb5078a0be3942db78dbc2c79a0ef#c86bec0977fbb5078a0be3942db78dbc2c79a0ef"
+dependencies = [
+ "b10x-harness-http",
+ "b10x-harness-wire",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "b10x-harness-http"
 version = "0.11.0"
 source = "git+https://github.com/beyond10x/harness?rev=c86bec0977fbb5078a0be3942db78dbc2c79a0ef#c86bec0977fbb5078a0be3942db78dbc2c79a0ef"
@@ -546,6 +597,17 @@ dependencies = [
 
 [[package]]
 name = "b10x-harness-messages"
+version = "0.11.0"
+source = "git+https://github.com/beyond10x/harness?rev=c86bec0977fbb5078a0be3942db78dbc2c79a0ef#c86bec0977fbb5078a0be3942db78dbc2c79a0ef"
+dependencies = [
+ "b10x-harness-http",
+ "b10x-harness-wire",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "b10x-harness-responses"
 version = "0.11.0"
 source = "git+https://github.com/beyond10x/harness?rev=c86bec0977fbb5078a0be3942db78dbc2c79a0ef#c86bec0977fbb5078a0be3942db78dbc2c79a0ef"
 dependencies = [
@@ -3066,6 +3128,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ulid"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
+dependencies = [
+ "rand",
+ "serde",
+ "web-time",
+]
+
+[[package]]
 name = "unicode-general-category"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3464,6 +3537,28 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-client"
+version = "0.2.3"
+source = "git+https://github.com/beyond10x/workspace.git?rev=ce66f9fb7f582aca436a7af6d1582f891f0dfaea#ce66f9fb7f582aca436a7af6d1582f891f0dfaea"
+dependencies = [
+ "agentide-contracts",
+ "reqwest 0.13.4",
+ "serde",
+ "thiserror",
+ "url",
+ "workspace-core",
+]
+
+[[package]]
+name = "workspace-core"
+version = "0.2.3"
+source = "git+https://github.com/beyond10x/workspace.git?rev=ce66f9fb7f582aca436a7af6d1582f891f0dfaea#ce66f9fb7f582aca436a7af6d1582f891f0dfaea"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "writeable"

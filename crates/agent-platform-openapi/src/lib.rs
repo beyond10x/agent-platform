@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const EXPECTED_OPENAPI_SHA256: &str =
-    "c8c3a683bf3d6376f0d45410b2a3d06016f3de8423dc9668b7b5241181960890";
+    "76d6352f9460ccb42d8925657df20edce045e9575fa1483b8f9235e7535dc571";
 
 /// Builds the complete `OpenAPI` document as a deterministic JSON value.
 ///
@@ -156,7 +156,7 @@ const fn request_schema(operation: Operation) -> Option<&'static str> {
         Operation::ActivateRevision => Some("ActivateRevision"),
         Operation::CreateCapabilityProfile => Some("CreateCapabilityProfile"),
         Operation::UpdateCapabilityProfile => Some("UpdateCapabilityProfile"),
-        Operation::SubmitTask => Some("SubmitTask"),
+        Operation::SubmitTask | Operation::SubmitCodingSessionTurn => Some("SubmitTask"),
         Operation::ResolveTaskApproval => Some("ResolveApproval"),
         Operation::CreateTrigger => Some("CreateTrigger"),
         Operation::Liveness
@@ -183,7 +183,7 @@ const fn response_schema(operation: Operation) -> &'static str {
             "CapabilityProfile"
         }
         Operation::ListTasks => "TaskList",
-        Operation::SubmitTask | Operation::GetTask => "Task",
+        Operation::SubmitTask | Operation::SubmitCodingSessionTurn | Operation::GetTask => "Task",
         Operation::StreamTaskEvents => "TaskEvent",
         Operation::ListTaskApprovals => "PendingApprovalList",
         Operation::ResolveTaskApproval => "PendingApproval",

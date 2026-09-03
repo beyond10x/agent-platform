@@ -6,23 +6,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_platform_api::{
     ACTIVATE_PATH, AGENT_PATH, AGENTS_PATH, CAPABILITY_PROFILE_PATH, CAPABILITY_PROFILES_PATH,
-    DOCS_API_PATH, DOCS_INDEX_PATH, DOCS_ROOT_PATH, DOCS_STYLES_PATH, LIVENESS_PATH, OPENAPI_PATH,
-    ProblemDocument, REVISIONS_PATH, TASK_APPROVAL_PATH, TASK_APPROVALS_PATH, TASK_EVENTS_PATH,
-    TASK_PATH, TASKS_PATH, TRIGGERS_PATH,
+    CODING_SESSION_TURNS_PATH, DOCS_API_PATH, DOCS_INDEX_PATH, DOCS_ROOT_PATH, DOCS_STYLES_PATH,
+    LIVENESS_PATH, OPENAPI_PATH, ProblemDocument, REVISIONS_PATH, TASK_APPROVAL_PATH,
+    TASK_APPROVALS_PATH, TASK_EVENTS_PATH, TASK_PATH, TASKS_PATH, TRIGGERS_PATH,
 };
 use agent_platform_app::{
     Application, ApplicationError, ApprovalContinuation, TaskExecutionPlan, TrustedRequestContext,
 };
-use agent_platform_auth::{AttemptConnectorAccess, CredentialVerifier, UserModelLease, operation};
+use agent_platform_auth::{
+    AttemptConnectorAccess, AttemptWorkspaceAccess, CredentialVerifier, UserModelLease, operation,
+};
 use agent_platform_core::{
     ActivateRevision, AgentId, ApprovalId, AttemptId, CapabilityProfileId, ConnectorOwnerContext,
-    CreateAgent, CreateCapabilityProfile, CreateTrigger, PendingApproval, RequestId,
-    ResolveApproval, RevisionSpec, SubmitTask, TaskEventKind, TaskFailure, TaskId, TenantId,
-    UpdateCapabilityProfile,
+    ConversationInput, CreateAgent, CreateCapabilityProfile, CreateTrigger, PendingApproval,
+    RequestId, ResolveApproval, RevisionSpec, SubmitTask, TaskEventKind, TaskFailure, TaskId,
+    TenantId, UpdateCapabilityProfile,
 };
 use agent_platform_harness::{
-    ApprovalDecision, ApprovalPort, ConnectorApprovalEvidence, ExecutionError, UserModelExecution,
-    UserModelRunOutcome, UserModelRunner,
+    ApprovalDecision, ApprovalPort, ConnectorApprovalEvidence, ExecutionError, LoopEvent,
+    UserModelExecution, UserModelRunOutcome, UserModelRunner,
 };
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Extension, Path, State};
@@ -68,6 +70,7 @@ struct AttemptAdmission {
     attempt_id: AttemptId,
     lease: Option<Arc<UserModelLease>>,
     connector_access: Option<Arc<AttemptConnectorAccess>>,
+    workspace_access: Option<Arc<AttemptWorkspaceAccess>>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +152,7 @@ pub fn router(state: HttpState) -> Router {
         )
         .route(CAPABILITY_PROFILE_PATH, patch(update_capability_profile))
         .route(TASKS_PATH, get(list_tasks).post(submit_task))
+        .route(CODING_SESSION_TURNS_PATH, post(submit_coding_session_turn))
         .route(TASK_PATH, get(get_task))
         .route(TASK_EVENTS_PATH, get(stream_task_events))
         .route(TASK_APPROVALS_PATH, get(list_task_approvals))
@@ -181,9 +185,9 @@ async fn authenticate(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
     let attempt_id = (request.method() == axum::http::Method::POST
-        && request.uri().path() == TASKS_PATH)
-        .then(new_attempt_id)
-        .transpose();
+        && matches!(request.uri().path(), TASKS_PATH | CODING_SESSION_TURNS_PATH))
+    .then(new_attempt_id)
+    .transpose();
     let attempt_id = match attempt_id {
         Ok(attempt_id) => attempt_id,
         Err(error) => {
@@ -202,7 +206,7 @@ async fn authenticate(
         Ok(authenticated) => authenticated,
         Err(error) => return problem(StatusCode::UNAUTHORIZED, "unauthenticated", error.reason()),
     };
-    let (authority, lease, connector_access) = authenticated.into_parts();
+    let (authority, lease, connector_access, workspace_access) = authenticated.into_parts();
     let request_id = match RequestId::new(format!("req_{}", Uuid::now_v7().simple())) {
         Ok(request_id) => request_id,
         Err(error) => {
@@ -233,6 +237,7 @@ async fn authenticate(
             attempt_id,
             lease,
             connector_access,
+            workspace_access,
         });
     }
     next.run(request).await
@@ -426,9 +431,37 @@ async fn submit_task(
     Extension(attempt): Extension<AttemptAdmission>,
     Json(request): Json<SubmitTask>,
 ) -> Response {
+    admit_submitted_task(&state, &context, attempt, request)
+}
+
+async fn submit_coding_session_turn(
+    State(state): State<HttpState>,
+    Extension(context): Extension<TrustedRequestContext>,
+    Extension(attempt): Extension<AttemptAdmission>,
+    Json(request): Json<SubmitTask>,
+) -> Response {
+    if !matches!(
+        serde_json::from_value::<ConversationInput>(request.input.clone()),
+        Ok(ConversationInput::CodingSessionTurn { .. })
+    ) {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "coding_session_turn_invalid",
+            "the coding endpoint requires a coding_session_turn input",
+        );
+    }
+    admit_submitted_task(&state, &context, attempt, request)
+}
+
+fn admit_submitted_task(
+    state: &HttpState,
+    context: &TrustedRequestContext,
+    attempt: AttemptAdmission,
+    request: SubmitTask,
+) -> Response {
     let admission = match state
         .app
-        .admit_task(&context, request, attempt.attempt_id.clone())
+        .admit_task(context, request, attempt.attempt_id.clone())
     {
         Ok(admission) => admission,
         Err(error) => return application_error(&error),
@@ -442,6 +475,7 @@ async fn submit_task(
             admission.plan.clone(),
             lease,
             attempt.connector_access,
+            attempt.workspace_access,
         );
     }
     (StatusCode::ACCEPTED, Json(admission.plan.task)).into_response()
@@ -551,7 +585,7 @@ async fn resolve_task_approval(
             );
         }
     };
-    let (_, lease, connector_access) = authenticated.into_parts();
+    let (_, lease, connector_access, workspace_access) = authenticated.into_parts();
     let Some(lease) = lease else {
         return problem(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -574,6 +608,7 @@ async fn resolve_task_approval(
         continuation,
         lease,
         connector_access,
+        workspace_access,
     );
     (StatusCode::ACCEPTED, Json(approval)).into_response()
 }
@@ -650,6 +685,7 @@ fn spawn_execution(
     plan: TaskExecutionPlan,
     lease: Arc<UserModelLease>,
     connector_access: Option<Arc<AttemptConnectorAccess>>,
+    workspace_access: Option<Arc<AttemptWorkspaceAccess>>,
 ) {
     tokio::spawn(async move {
         let tenant_id = plan.task.tenant_id.clone();
@@ -661,7 +697,7 @@ fn spawn_execution(
         {
             return;
         }
-        let emit = task_text_sink(&app, &tenant_id, &task_id, &attempt_id);
+        let emit = task_event_sink(&app, &tenant_id, &task_id, &attempt_id);
         let approval_evidence = ConnectorApprovalEvidence::default();
         let approval_context = ConnectorOwnerContext {
             tenant_id: tenant_id.clone(),
@@ -681,11 +717,13 @@ fn spawn_execution(
         let result = runner
             .execute(
                 UserModelExecution {
+                    task_id: task_id.clone(),
                     revision: plan.revision.clone(),
                     toolset: plan.toolset.clone(),
                     input: plan.task.input.clone(),
                     lease,
                     connector_access,
+                    workspace_access,
                     attempt_id: attempt_id.clone(),
                     connector_context: connector_operation_context(&approval_context),
                     approval_evidence,
@@ -705,6 +743,7 @@ fn spawn_approval_resume(
     continuation: ApprovalContinuation,
     lease: Arc<UserModelLease>,
     connector_access: Option<Arc<AttemptConnectorAccess>>,
+    workspace_access: Option<Arc<AttemptWorkspaceAccess>>,
 ) {
     tokio::spawn(async move {
         let plan = TaskExecutionPlan {
@@ -754,15 +793,17 @@ fn spawn_approval_resume(
             targets: approval_targets(&plan),
             deferred: deferred.clone(),
         };
-        let emit = task_text_sink(&app, &tenant_id, &task_id, &attempt_id);
+        let emit = task_event_sink(&app, &tenant_id, &task_id, &attempt_id);
         let result = runner
             .resume_approval(
                 UserModelExecution {
+                    task_id: task_id.clone(),
                     revision: plan.revision.clone(),
                     toolset: plan.toolset.clone(),
                     input: plan.task.input.clone(),
                     lease,
                     connector_access,
+                    workspace_access,
                     attempt_id,
                     connector_context: connector_operation_context(&context),
                     approval_evidence: evidence,
@@ -837,18 +878,46 @@ fn fail_execution(app: &Application, plan: &TaskExecutionPlan, code: &str, messa
     );
 }
 
-fn task_text_sink(
+fn task_event_sink(
     app: &Application,
     tenant_id: &TenantId,
     task_id: &TaskId,
     attempt_id: &AttemptId,
-) -> Arc<dyn Fn(String) + Send + Sync> {
+) -> Arc<dyn Fn(LoopEvent) + Send + Sync> {
     let app = app.clone();
     let tenant_id = tenant_id.clone();
     let task_id = task_id.clone();
     let attempt_id = attempt_id.clone();
-    Arc::new(move |text: String| {
-        let _ = app.append_task_text(&tenant_id, &task_id, &attempt_id, now_ms(), text);
+    Arc::new(move |event: LoopEvent| match event {
+        LoopEvent::TextDelta { text } => {
+            let _ = app.append_task_text(&tenant_id, &task_id, &attempt_id, now_ms(), text);
+        }
+        LoopEvent::ContextChanged { revision, .. } => {
+            let _ = app.append_task_context_changed(
+                &tenant_id,
+                &task_id,
+                &attempt_id,
+                now_ms(),
+                revision,
+            );
+        }
+        LoopEvent::InventoryChanged {
+            revision,
+            published_tools,
+        } => {
+            let _ = app.append_task_inventory_changed(
+                &tenant_id,
+                &task_id,
+                &attempt_id,
+                now_ms(),
+                revision,
+                published_tools
+                    .into_iter()
+                    .map(|name| name.to_string())
+                    .collect(),
+            );
+        }
+        _ => {}
     })
 }
 
@@ -1048,6 +1117,24 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(json_body(response).await["code"], "unauthenticated");
+    }
+
+    #[tokio::test]
+    async fn coding_endpoint_refuses_an_untyped_task_input() {
+        let response = service()
+            .oneshot(request(
+                Method::POST,
+                CODING_SESSION_TURNS_PATH,
+                r#"{"agent_id":"agent-one","idempotency_key":"turn-one","input":{"prompt":"hello"}}"#,
+                Some("a-development-secret"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(response).await["code"],
+            "coding_session_turn_invalid"
+        );
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ pub const ACTIVATE_PATH: &str = "/v1/agents/{agent_id}/activate";
 pub const CAPABILITY_PROFILES_PATH: &str = "/v1/capability-profiles";
 pub const CAPABILITY_PROFILE_PATH: &str = "/v1/capability-profiles/{profile_id}";
 pub const TASKS_PATH: &str = "/v1/tasks";
+pub const CODING_SESSION_TURNS_PATH: &str = "/v1/coding-session-turns";
 pub const TASK_PATH: &str = "/v1/tasks/{task_id}";
 pub const TASK_EVENTS_PATH: &str = "/v1/tasks/{task_id}/events";
 pub const TASK_APPROVALS_PATH: &str = "/v1/tasks/{task_id}/approvals";
@@ -53,6 +54,7 @@ pub enum Operation {
     UpdateCapabilityProfile,
     ListTasks,
     SubmitTask,
+    SubmitCodingSessionTurn,
     GetTask,
     StreamTaskEvents,
     ListTaskApprovals,
@@ -76,6 +78,7 @@ impl Operation {
             Self::UpdateCapabilityProfile => "updateCapabilityProfile",
             Self::ListTasks => "listTasks",
             Self::SubmitTask => "submitTask",
+            Self::SubmitCodingSessionTurn => "submitCodingSessionTurn",
             Self::GetTask => "getTask",
             Self::StreamTaskEvents => "streamTaskEvents",
             Self::ListTaskApprovals => "listTaskApprovals",
@@ -99,6 +102,9 @@ impl Operation {
             Self::UpdateCapabilityProfile => "Replace a capability profile with compare-and-swap",
             Self::ListTasks => "List admitted tasks",
             Self::SubmitTask => "Idempotently admit an asynchronous task",
+            Self::SubmitCodingSessionTurn => {
+                "Admit a hosted coding turn bound to Workspace and AgentIDE"
+            }
             Self::GetTask => "Get task state",
             Self::StreamTaskEvents => "Stream task events",
             Self::ListTaskApprovals => "List exact Connector calls awaiting human approval",
@@ -200,6 +206,13 @@ pub const ROUTES: &[RouteSpec] = &[
         method: Method::Post,
         path: TASKS_PATH,
         operation: Operation::SubmitTask,
+        authenticated: true,
+        success_status: 202,
+    },
+    RouteSpec {
+        method: Method::Post,
+        path: CODING_SESSION_TURNS_PATH,
+        operation: Operation::SubmitCodingSessionTurn,
         authenticated: true,
         success_status: 202,
     },

@@ -11,6 +11,9 @@ pub use connectors_client::operation;
 use connectors_client::{HostedClient, RedeemedSubscription, SubscriptionLease};
 use identity_client::{AccessCredential, IdentityClient};
 use sha2::{Digest, Sha256};
+use workspace_client::WorkspaceClient;
+use workspace_core::{CodingActorViewRequest, CodingIntentInvocation, CodingIntentResult};
+use zeroize::Zeroizing;
 
 pub const AGENTS_READ: &str = "agents.read";
 pub const AGENTS_MANAGE: &str = "agents.manage";
@@ -134,6 +137,72 @@ pub struct AttemptConnectorAccess {
     attempt_id: AttemptId,
 }
 
+/// Attempt-bounded access to Workspace using the current user's transient Identity session.
+///
+/// The session credential stays private to this authorization adapter and is never persisted or
+/// exposed to the application, Harness, model, or Workspace tool arguments.
+#[derive(Clone)]
+pub struct AttemptWorkspaceAccess {
+    workspace: WorkspaceClient,
+    authorization: Zeroizing<String>,
+    attempt_id: AttemptId,
+}
+
+impl std::fmt::Debug for AttemptWorkspaceAccess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AttemptWorkspaceAccess")
+            .field("workspace", &"configured")
+            .field("authorization", &"[REDACTED]")
+            .field("attempt_id", &self.attempt_id)
+            .finish()
+    }
+}
+
+impl AttemptWorkspaceAccess {
+    pub fn attempt_id(&self) -> &AttemptId {
+        &self.attempt_id
+    }
+
+    pub async fn actor_view(
+        &self,
+        attempt_id: &AttemptId,
+        session_id: &str,
+        request: &CodingActorViewRequest,
+    ) -> Result<agentide_contracts::ActorView, AuthenticationError> {
+        self.require_attempt(attempt_id)?;
+        self.workspace
+            .coding_actor_view(&self.authorization, session_id, request)
+            .await
+            .map_err(|_| {
+                AuthenticationError::new("the current Workspace actor view is unavailable")
+            })
+    }
+
+    pub async fn invoke(
+        &self,
+        attempt_id: &AttemptId,
+        session_id: &str,
+        request: &CodingIntentInvocation,
+    ) -> Result<CodingIntentResult, AuthenticationError> {
+        self.require_attempt(attempt_id)?;
+        self.workspace
+            .invoke_coding_intent(&self.authorization, session_id, request)
+            .await
+            .map_err(|_| AuthenticationError::new("the Workspace coding intent was refused"))
+    }
+
+    fn require_attempt(&self, attempt_id: &AttemptId) -> Result<(), AuthenticationError> {
+        if attempt_id == &self.attempt_id {
+            Ok(())
+        } else {
+            Err(AuthenticationError::new(
+                "Workspace authority belongs to another attempt",
+            ))
+        }
+    }
+}
+
 impl std::fmt::Debug for AttemptConnectorAccess {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -186,21 +255,28 @@ pub struct AuthenticatedRequest {
     authority: VerifiedAuthority,
     user_model_lease: Option<Arc<UserModelLease>>,
     connector_access: Option<Arc<AttemptConnectorAccess>>,
+    workspace_access: Option<Arc<AttemptWorkspaceAccess>>,
 }
+
+pub type AuthenticatedRequestParts = (
+    VerifiedAuthority,
+    Option<Arc<UserModelLease>>,
+    Option<Arc<AttemptConnectorAccess>>,
+    Option<Arc<AttemptWorkspaceAccess>>,
+);
 
 impl AuthenticatedRequest {
     pub fn authority(&self) -> &VerifiedAuthority {
         &self.authority
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        VerifiedAuthority,
-        Option<Arc<UserModelLease>>,
-        Option<Arc<AttemptConnectorAccess>>,
-    ) {
-        (self.authority, self.user_model_lease, self.connector_access)
+    pub fn into_parts(self) -> AuthenticatedRequestParts {
+        (
+            self.authority,
+            self.user_model_lease,
+            self.connector_access,
+            self.workspace_access,
+        )
     }
 }
 
@@ -235,6 +311,7 @@ pub trait CredentialVerifier: Send + Sync {
 pub struct IdentityVerifier {
     client: IdentityClient,
     connectors: Option<HostedClient>,
+    workspace: Option<WorkspaceClient>,
     scopes: Vec<String>,
 }
 
@@ -247,6 +324,7 @@ impl std::fmt::Debug for IdentityVerifier {
                 "connectors",
                 &self.connectors.as_ref().map(|_| "configured"),
             )
+            .field("workspace", &self.workspace.as_ref().map(|_| "configured"))
             .field("scopes", &self.scopes)
             .finish()
     }
@@ -269,6 +347,7 @@ impl IdentityVerifier {
         Ok(Self {
             client,
             connectors: None,
+            workspace: None,
             scopes,
         })
     }
@@ -277,6 +356,14 @@ impl IdentityVerifier {
         self.connectors =
             Some(HostedClient::new(hosted_api_base).map_err(|_| {
                 AuthenticationError::new("Connectors client configuration is invalid")
+            })?);
+        Ok(self)
+    }
+
+    pub fn with_workspace(mut self, workspace_origin: &str) -> Result<Self, AuthenticationError> {
+        self.workspace =
+            Some(WorkspaceClient::new(workspace_origin).map_err(|_| {
+                AuthenticationError::new("Workspace client configuration is invalid")
             })?);
         Ok(self)
     }
@@ -365,10 +452,21 @@ impl CredentialVerifier for IdentityVerifier {
                 }
                 (None, _) => (None, None),
             };
+            let workspace_access =
+                attempt_id
+                    .zip(self.workspace.as_ref())
+                    .map(|(attempt_id, workspace)| {
+                        Arc::new(AttemptWorkspaceAccess {
+                            workspace: workspace.clone(),
+                            authorization: Zeroizing::new(authorization.to_owned()),
+                            attempt_id: attempt_id.clone(),
+                        })
+                    });
             Ok(AuthenticatedRequest {
                 authority,
                 user_model_lease,
                 connector_access,
+                workspace_access,
             })
         })
     }
@@ -425,6 +523,7 @@ impl CredentialVerifier for DevelopmentVerifier {
                     authority: self.authority.clone(),
                     user_model_lease: None,
                     connector_access: None,
+                    workspace_access: None,
                 })
             } else {
                 Err(AuthenticationError::new(
@@ -495,6 +594,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(authority.executor(), None);
+    }
+
+    #[test]
+    fn workspace_authority_is_attempt_bound_and_redacts_the_session() {
+        let access = AttemptWorkspaceAccess {
+            workspace: WorkspaceClient::new("http://127.0.0.1:8080/").unwrap(),
+            authorization: Zeroizing::new("Bearer synthetic-session".to_owned()),
+            attempt_id: AttemptId::new("attempt-one").unwrap(),
+        };
+        assert!(
+            access
+                .require_attempt(&AttemptId::new("attempt-one").unwrap())
+                .is_ok()
+        );
+        assert!(
+            access
+                .require_attempt(&AttemptId::new("attempt-two").unwrap())
+                .is_err()
+        );
+        assert!(!format!("{access:?}").contains("synthetic-session"));
     }
 
     async fn identity_authority(headers: HeaderMap) -> Response {

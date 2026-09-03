@@ -53,6 +53,9 @@ struct ServeOptions {
     /// Identity-authenticated hosted Connectors API base used for attempt leases.
     #[arg(long)]
     connectors_api_base: Option<String>,
+    /// Identity-authenticated Workspace service origin used for hosted coding-session turns.
+    #[arg(long)]
+    workspace_origin: Option<String>,
     /// Messages-compatible provider API prefix used by Harness.
     #[arg(long, default_value = "https://api.anthropic.com/v1")]
     model_endpoint_base: String,
@@ -88,6 +91,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn serve(options: &ServeOptions) -> Result<(), Box<dyn Error>> {
     let identity_origin = options.identity_origin.as_deref();
     let connectors_api_base = options.connectors_api_base.as_deref();
+    let workspace_origin = options.workspace_origin.as_deref();
+    if workspace_origin.is_some() && identity_origin.is_none() {
+        return Err("Workspace coding sessions require Identity production authority".into());
+    }
     if identity_origin.is_none()
         && !options.listen.ip().is_loopback()
         && !options.allow_insecure_dev_listener
@@ -120,6 +127,11 @@ async fn serve(options: &ServeOptions) -> Result<(), Box<dyn Error>> {
         let verifier = IdentityVerifier::new(identity_origin, &options.identity_audience, scopes)?;
         let verifier = if let Some(connectors_api_base) = connectors_api_base {
             verifier.with_connectors(connectors_api_base)?
+        } else {
+            verifier
+        };
+        let verifier = if let Some(workspace_origin) = workspace_origin {
+            verifier.with_workspace(workspace_origin)?
         } else {
             verifier
         };

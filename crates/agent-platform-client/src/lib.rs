@@ -137,6 +137,16 @@ impl AgentPlatformClient {
         self.post_json(bearer, "v1/tasks", request).await
     }
 
+    /// Submit one task whose input is a typed coding-session-turn envelope.
+    pub async fn submit_coding_session_turn(
+        &self,
+        bearer: &str,
+        request: &SubmitTask,
+    ) -> Result<Task, ClientError> {
+        self.post_json(bearer, "v1/coding-session-turns", request)
+            .await
+    }
+
     pub async fn list_tasks(&self, bearer: &str) -> Result<Vec<Task>, ClientError> {
         self.get_json(bearer, "v1/tasks").await
     }

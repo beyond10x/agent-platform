@@ -921,6 +921,62 @@ impl Application {
         self.persist(&state)
     }
 
+    pub fn append_task_context_changed(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        revision: String,
+    ) -> Result<(), ApplicationError> {
+        self.append_task_observation(
+            tenant_id,
+            task_id,
+            attempt_id,
+            at_ms,
+            TaskEventKind::ContextChanged { revision },
+        )
+    }
+
+    pub fn append_task_inventory_changed(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        revision: String,
+        published_tools: Vec<String>,
+    ) -> Result<(), ApplicationError> {
+        self.append_task_observation(
+            tenant_id,
+            task_id,
+            attempt_id,
+            at_ms,
+            TaskEventKind::InventoryChanged {
+                revision,
+                published_tools,
+            },
+        )
+    }
+
+    fn append_task_observation(
+        &self,
+        tenant_id: &TenantId,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+        event: TaskEventKind,
+    ) -> Result<(), ApplicationError> {
+        let mut state = self.lock_state()?;
+        let tenant = state
+            .tenants
+            .get_mut(tenant_id)
+            .ok_or(ApplicationError::TaskNotFound)?;
+        require_attempt(tenant, task_id, attempt_id)?;
+        append_event(tenant, task_id, attempt_id, at_ms, event)?;
+        self.persist(&state)
+    }
+
     pub fn succeed_task(
         &self,
         tenant_id: &TenantId,
