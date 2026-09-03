@@ -4,6 +4,9 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+- Add a typed `coding_session_turn` conversation envelope that persists only Workspace and
+  AgentIDE session references plus deliberate prompt attachments; actor context and intent
+  inventory remain dynamically derived by Workspace for each model turn.
 - Delegate private runtime construction, signing, visibility enforcement and release announcement to
   Devcenter's repository-owned promotion workflow instead of publishing from the public source
   repository's package authority.

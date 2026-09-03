@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use agentide_contracts::{ChangeSelector, ContextSelection, OpenFileReference};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -392,7 +393,7 @@ pub struct ProjectContext {
 }
 
 /// Typed input for one project-bound conversation turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConversationInput {
     ProjectConversation {
@@ -400,6 +401,22 @@ pub enum ConversationInput {
         #[serde(default)]
         messages: Vec<ConversationMessage>,
         context: ProjectContext,
+    },
+    /// One prompt bound to a ready Workspace materialization and `AgentIDE` coordination session.
+    ///
+    /// Actor identity, current context pins and tool availability are deliberately absent: the
+    /// execution worker asks Workspace to derive those values again before every model turn.
+    CodingSessionTurn {
+        prompt: String,
+        #[serde(default)]
+        messages: Vec<ConversationMessage>,
+        workspace_session_id: String,
+        agentide_session_id: String,
+        #[serde(default)]
+        focused_selections: Vec<ContextSelection>,
+        #[serde(default)]
+        open_files: Vec<OpenFileReference>,
+        active_diff: Option<ChangeSelector>,
     },
 }
 

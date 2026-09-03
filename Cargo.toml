@@ -17,7 +17,7 @@ members = [
 [workspace.package]
 version = "0.6.3"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.98"
 license = "LicenseRef-B10x-Proprietary"
 repository = "https://github.com/beyond10x/agent-platform"
 authors = ["Timo Friedl <1379383+timofriedlberlin@users.noreply.github.com>"]
@@ -34,6 +34,7 @@ agent-platform-openapi = { path = "crates/agent-platform-openapi" }
 agent-platform-docs = { path = "crates/agent-platform-docs" }
 agent-platform-http = { path = "crates/agent-platform-http" }
 agent-platform-client = { path = "crates/agent-platform-client" }
+agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", rev = "39efb44984259d411bba7838efb4ad145806d97c" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
 # keeps this service from reinterpreting that boundary crate by crate.
