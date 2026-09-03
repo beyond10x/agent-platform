@@ -126,6 +126,10 @@ pub enum ProjectionError {
     DuplicateToolName(String),
     #[error("tool name `{0}` is not a valid Harness tool name")]
     InvalidToolName(String),
+    #[error(
+        "Connector operation `{operation_ref}` has an input schema that cannot be published to a model"
+    )]
+    UnpublishableInputSchema { operation_ref: String },
     #[error("capability projection could not be serialized deterministically")]
     Serialization,
 }
@@ -195,6 +199,12 @@ pub async fn compile(
     digest_field(&mut digest, CONNECTOR_OPERATION_CONTRACT.as_bytes());
 
     for mapping in mappings {
+        // Denial is terminal and must win over every property of the described operation,
+        // including a provider-mandated approval posture. A denied mapping contributes no model
+        // tool, needs no live Connector description, and grants no authority.
+        if mapping.posture == CapabilityPosture::Deny {
+            continue;
+        }
         if !names.insert(mapping.tool_name.clone()) {
             return Err(ProjectionError::DuplicateToolName(
                 mapping.tool_name.clone(),
@@ -214,6 +224,11 @@ pub async fn compile(
                 operation_ref: operation.operation_ref,
             });
         }
+        if !publishable_input_schema(&operation.input_schema) {
+            return Err(ProjectionError::UnpublishableInputSchema {
+                operation_ref: operation.operation_ref,
+            });
+        }
         let connection_ref = selected_connection(mapping, &operation)?;
         let tool_name = ToolName::new(mapping.tool_name.clone())
             .map_err(|_| ProjectionError::InvalidToolName(mapping.tool_name.clone()))?;
@@ -227,7 +242,7 @@ pub async fn compile(
                 Approval::Required
             }
             (CapabilityPosture::Allow, ApprovalPosture::NotRequired) => Approval::NotRequired,
-            (CapabilityPosture::Deny, _) => continue,
+            (CapabilityPosture::Deny, _) => unreachable!("denied mappings were removed above"),
         };
         let tool = ToolSpec {
             name: tool_name,
@@ -259,6 +274,62 @@ pub async fn compile(
         digest_sha256: hex::encode(digest.finalize()),
         capabilities,
     })
+}
+
+/// The Messages provider accepts JSON Schema object inputs, but refuses unconstrained property
+/// placeholders such as `{ "title": "DomainId" }`. Connectors may use those placeholders for
+/// non-model clients; an agent profile must fail before activation instead of turning every later
+/// model request into an opaque provider refusal.
+fn publishable_input_schema(schema: &serde_json::Value) -> bool {
+    let Some(root) = schema.as_object() else {
+        return false;
+    };
+    if root.get("type").and_then(serde_json::Value::as_str) != Some("object") {
+        return false;
+    }
+    root.get("properties").is_none_or(|properties| {
+        properties
+            .as_object()
+            .is_some_and(|properties| properties.values().all(publishable_schema_node))
+    })
+}
+
+fn publishable_schema_node(schema: &serde_json::Value) -> bool {
+    let Some(schema) = schema.as_object() else {
+        return false;
+    };
+    let constrained = schema.contains_key("type")
+        || schema.contains_key("enum")
+        || schema.contains_key("const")
+        || schema.contains_key("$ref")
+        || schema.contains_key("anyOf")
+        || schema.contains_key("oneOf")
+        || schema.contains_key("allOf");
+    if !constrained {
+        return false;
+    }
+    if let Some(properties) = schema.get("properties")
+        && !properties
+            .as_object()
+            .is_some_and(|properties| properties.values().all(publishable_schema_node))
+    {
+        return false;
+    }
+    if let Some(items) = schema.get("items")
+        && !publishable_schema_node(items)
+    {
+        return false;
+    }
+    for keyword in ["anyOf", "oneOf", "allOf"] {
+        if let Some(branches) = schema.get(keyword)
+            && !branches.as_array().is_some_and(|branches| {
+                !branches.is_empty() && branches.iter().all(publishable_schema_node)
+            })
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn selected_connection(
@@ -402,6 +473,57 @@ mod tests {
         assert_eq!(
             error,
             ProjectionError::DuplicateToolName("create_support_ticket".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn deny_wins_over_provider_required_approval() {
+        let catalog =
+            InMemoryCatalog::new([operation(EffectClass::Mutating, ApprovalPosture::Required)]);
+        let mut denied = mapping();
+        denied.posture = CapabilityPosture::Deny;
+        let compiled = compile(&catalog, &TenantId::new("tenant-one").unwrap(), &[denied])
+            .await
+            .unwrap();
+        assert!(compiled.capabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn denied_mapping_does_not_require_a_current_connector_description() {
+        let mut denied = mapping();
+        denied.posture = CapabilityPosture::Deny;
+        let compiled = compile(
+            &EmptyCatalog,
+            &TenantId::new("tenant-one").unwrap(),
+            &[denied],
+        )
+        .await
+        .unwrap();
+        assert!(compiled.capabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unconstrained_connector_inputs_are_refused_before_model_execution() {
+        let mut invalid = operation(EffectClass::ReadOnly, ApprovalPosture::NotRequired);
+        invalid.input_schema = serde_json::json!({
+            "type": "object",
+            "required": ["list_id"],
+            "properties": {"list_id": {"title": "example.ListId"}},
+            "additionalProperties": false
+        });
+        let catalog = InMemoryCatalog::new([invalid]);
+        let error = compile(
+            &catalog,
+            &TenantId::new("tenant-one").unwrap(),
+            &[mapping()],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ProjectionError::UnpublishableInputSchema {
+                operation_ref: "tickets.create".to_owned()
+            }
         );
     }
 }

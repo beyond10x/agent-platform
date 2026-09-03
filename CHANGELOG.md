@@ -4,6 +4,12 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-09-03
+
+- Make a capability-profile `deny` terminal before Connector description and approval handling, so
+  a provider-required approval can never re-enable a denied agent tool.
+- Refuse unconstrained Connector input placeholders before profile activation instead of allowing
+  the model provider to reject every later task with an opaque route error.
 - Replace blocking, process-local approval waiters with Harness 0.11 durable checkpoints. Agent
   Platform persists the checkpoint, exact immutable revision, compiled Connector toolset, decision,
   and single-worker claim in tenant-scoped task state; restarts clear only the transient claim and
