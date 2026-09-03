@@ -46,15 +46,19 @@ struct ServeOptions {
     #[arg(long)]
     allow_insecure_dev_listener: bool,
     /// Identity service origin. When present, requests use production session authority.
-    #[arg(long)]
+    #[arg(long, env = "AGENT_PLATFORM_IDENTITY_ORIGIN")]
     identity_origin: Option<String>,
-    #[arg(long, default_value = "urn:b10x:agent-platform")]
+    #[arg(
+        long,
+        env = "AGENT_PLATFORM_IDENTITY_AUDIENCE",
+        default_value = "urn:b10x:agent-platform"
+    )]
     identity_audience: String,
     /// Identity-authenticated hosted Connectors API base used for attempt leases.
-    #[arg(long)]
+    #[arg(long, env = "AGENT_PLATFORM_CONNECTORS_API_BASE")]
     connectors_api_base: Option<String>,
     /// Identity-authenticated Workspace service origin used for hosted coding-session turns.
-    #[arg(long)]
+    #[arg(long, env = "AGENT_PLATFORM_WORKSPACE_ORIGIN")]
     workspace_origin: Option<String>,
     /// Messages-compatible provider API prefix used by Harness.
     #[arg(long, default_value = "https://api.anthropic.com/v1")]
