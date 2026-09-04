@@ -4,6 +4,12 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+## [0.6.8] — 2026-09-04
+
+- Make agents private to their creating Identity principal, including agent discovery, direct
+  access, revisions, task admission and idempotency, and trigger operations. Tenant membership no
+  longer grants implicit access to another engineer's agents.
+
 ## [0.6.7] — 2026-09-03
 
 - Align the execution plane with current Identity 0.5.6, Connectors 0.5.6, Workspace 0.2.12, and
