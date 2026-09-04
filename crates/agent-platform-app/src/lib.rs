@@ -264,7 +264,14 @@ impl Application {
         Ok(state
             .tenants
             .get(context.authority.tenant_id())
-            .map_or_else(Vec::new, |tenant| tenant.agents.values().cloned().collect()))
+            .map_or_else(Vec::new, |tenant| {
+                tenant
+                    .agents
+                    .values()
+                    .filter(|agent| agent_owned_by(agent, context))
+                    .cloned()
+                    .collect()
+            }))
     }
 
     pub fn get_agent(
@@ -276,6 +283,7 @@ impl Application {
         let state = self.lock_state()?;
         tenant(&state, context)
             .and_then(|tenant| tenant.agents.get(agent_id))
+            .filter(|agent| agent_owned_by(agent, context))
             .cloned()
             .ok_or(ApplicationError::AgentNotFound)
     }
@@ -290,6 +298,13 @@ impl Application {
         spec.validate()?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
+        if !tenant
+            .agents
+            .get(agent_id)
+            .is_some_and(|agent| agent_owned_by(agent, context))
+        {
+            return Err(ApplicationError::AgentNotFound);
+        }
         if let Some(profile_id) = &spec.capability_profile_id
             && !tenant
                 .profiles
@@ -332,7 +347,11 @@ impl Application {
         context.require(AGENTS_READ)?;
         let state = self.lock_state()?;
         let tenant = tenant(&state, context).ok_or(ApplicationError::AgentNotFound)?;
-        if !tenant.agents.contains_key(agent_id) {
+        if !tenant
+            .agents
+            .get(agent_id)
+            .is_some_and(|agent| agent_owned_by(agent, context))
+        {
             return Err(ApplicationError::AgentNotFound);
         }
         Ok(tenant
@@ -350,6 +369,13 @@ impl Application {
         context.require(AGENTS_MANAGE)?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
+        if !tenant
+            .agents
+            .get(agent_id)
+            .is_some_and(|agent| agent_owned_by(agent, context))
+        {
+            return Err(ApplicationError::AgentNotFound);
+        }
         if !tenant
             .revisions
             .get(agent_id)
@@ -500,31 +526,15 @@ impl Application {
         request.validate()?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
-        if let Some(task_id) = tenant.task_keys.get(&request.idempotency_key)
-            && let Some(task) = tenant.tasks.get(task_id)
+        if !tenant
+            .agents
+            .get(&request.agent_id)
+            .is_some_and(|agent| agent_owned_by(agent, context))
         {
-            if task.agent_id == request.agent_id && task.input == request.input {
-                require_visible_profile(tenant, task.capability_profile_id.as_ref(), context)?;
-                let revision = tenant
-                    .revisions
-                    .get(&task.agent_id)
-                    .and_then(|revisions| revisions.get(&task.agent_revision))
-                    .ok_or(ApplicationError::RevisionNotFound)?;
-                let toolset = task
-                    .capability_profile_id
-                    .as_ref()
-                    .and_then(|id| tenant.profiles.get(id))
-                    .map(|profile| profile.compiled.clone());
-                return Ok(TaskAdmission {
-                    plan: TaskExecutionPlan {
-                        task: task.clone(),
-                        revision: revision.spec.clone(),
-                        toolset,
-                    },
-                    newly_created: false,
-                });
-            }
-            return Err(ApplicationError::IdempotencyConflict);
+            return Err(ApplicationError::AgentNotFound);
+        }
+        if let Some(admission) = existing_task_admission(tenant, context, &request)? {
+            return Ok(admission);
         }
         let agent = tenant
             .agents
@@ -568,9 +578,10 @@ impl Application {
             .and_then(|id| tenant.profiles.get(id))
             .map(|profile| profile.compiled.clone());
         let revision = revision.spec.clone();
-        tenant
-            .task_keys
-            .insert(task.idempotency_key.clone(), task.id.clone());
+        tenant.task_keys.insert(
+            principal_idempotency_key(context, &task.idempotency_key),
+            task.id.clone(),
+        );
         tenant.tasks.insert(task.id.clone(), task.clone());
         let event = TaskEvent {
             task_id: task.id.clone(),
@@ -1070,6 +1081,7 @@ impl Application {
         let agent = tenant
             .agents
             .get(&request.agent_id)
+            .filter(|agent| agent_owned_by(agent, context))
             .ok_or(ApplicationError::AgentNotFound)?;
         let active_revision = agent
             .active_revision
@@ -1102,7 +1114,12 @@ impl Application {
             .tenants
             .get(context.authority.tenant_id())
             .map_or_else(Vec::new, |tenant| {
-                tenant.triggers.values().cloned().collect()
+                tenant
+                    .triggers
+                    .values()
+                    .filter(|trigger| &trigger.authority_subject == context.authority.authority())
+                    .cloned()
+                    .collect()
             }))
     }
 
@@ -1230,8 +1247,51 @@ fn profile_visible(profile: &CapabilityProfile, context: &TrustedRequestContext)
         || &profile.created_by == context.authority.authority()
 }
 
+fn agent_owned_by(agent: &Agent, context: &TrustedRequestContext) -> bool {
+    &agent.created_by == context.authority.authority()
+}
+
 fn task_owned_by(task: &Task, context: &TrustedRequestContext) -> bool {
     &task.actor == context.authority.authority()
+}
+
+fn existing_task_admission(
+    tenant: &TenantState,
+    context: &TrustedRequestContext,
+    request: &SubmitTask,
+) -> Result<Option<TaskAdmission>, ApplicationError> {
+    let Some(task) = tenant.tasks.values().find(|task| {
+        task_owned_by(task, context) && task.idempotency_key == request.idempotency_key
+    }) else {
+        return Ok(None);
+    };
+    if task.agent_id != request.agent_id || task.input != request.input {
+        return Err(ApplicationError::IdempotencyConflict);
+    }
+    require_visible_profile(tenant, task.capability_profile_id.as_ref(), context)?;
+    let revision = tenant
+        .revisions
+        .get(&task.agent_id)
+        .and_then(|revisions| revisions.get(&task.agent_revision))
+        .ok_or(ApplicationError::RevisionNotFound)?;
+    let toolset = task
+        .capability_profile_id
+        .as_ref()
+        .and_then(|id| tenant.profiles.get(id))
+        .map(|profile| profile.compiled.clone());
+    Ok(Some(TaskAdmission {
+        plan: TaskExecutionPlan {
+            task: task.clone(),
+            revision: revision.spec.clone(),
+            toolset,
+        },
+        newly_created: false,
+    }))
+}
+
+fn principal_idempotency_key(context: &TrustedRequestContext, idempotency_key: &str) -> String {
+    let subject = context.authority.authority().as_str();
+    format!("{}:{subject}:{idempotency_key}", subject.len())
 }
 
 fn require_visible_profile(
@@ -1415,6 +1475,110 @@ mod tests {
             Err(ApplicationError::AgentNotFound)
         );
         assert!(app.list_agents(&tenant_two).unwrap().is_empty());
+    }
+
+    #[test]
+    fn same_tenant_principals_cannot_enumerate_or_operate_each_others_agents() {
+        let app = Application::new(Arc::new(EmptyCatalog));
+        let alice = context_for("tenant-one", "human-alice", 1);
+        let bob = context_for("tenant-one", "human-bob", 2);
+        let (alice_agent, alice_revision) = active_agent(&app, &alice);
+
+        let alice_agents = app.list_agents(&alice).unwrap();
+        assert_eq!(alice_agents.len(), 1);
+        assert_eq!(alice_agents[0].id, alice_agent.id);
+        assert!(app.list_agents(&bob).unwrap().is_empty());
+        assert_eq!(
+            app.get_agent(&bob, &alice_agent.id),
+            Err(ApplicationError::AgentNotFound)
+        );
+        assert_eq!(
+            app.create_revision(&bob, &alice_agent.id, revision()),
+            Err(ApplicationError::AgentNotFound)
+        );
+        assert_eq!(
+            app.list_revisions(&bob, &alice_agent.id),
+            Err(ApplicationError::AgentNotFound)
+        );
+        assert_eq!(
+            app.activate_revision(
+                &bob,
+                &alice_agent.id,
+                &ActivateRevision {
+                    revision: alice_revision.revision,
+                    expected_active_revision: Some(alice_revision.revision),
+                },
+            ),
+            Err(ApplicationError::AgentNotFound)
+        );
+        assert_eq!(
+            app.submit_task(
+                &bob,
+                SubmitTask {
+                    agent_id: alice_agent.id.clone(),
+                    idempotency_key: "foreign-task".to_owned(),
+                    input: serde_json::json!({"prompt": "show me"}),
+                },
+            ),
+            Err(ApplicationError::AgentNotFound)
+        );
+        assert_eq!(
+            app.create_trigger(
+                &bob,
+                CreateTrigger {
+                    name: "Foreign trigger".to_owned(),
+                    agent_id: alice_agent.id.clone(),
+                    enabled: true,
+                    task_input: serde_json::json!({"prompt": "show me"}),
+                    trigger: agent_platform_core::TriggerKind::Webhook {
+                        input_schema: serde_json::json!({"type": "object"}),
+                    },
+                },
+            ),
+            Err(ApplicationError::AgentNotFound)
+        );
+
+        let alice_trigger = app
+            .create_trigger(
+                &alice,
+                CreateTrigger {
+                    name: "Owner trigger".to_owned(),
+                    agent_id: alice_agent.id.clone(),
+                    enabled: true,
+                    task_input: serde_json::json!({"prompt": "owner task"}),
+                    trigger: agent_platform_core::TriggerKind::Webhook {
+                        input_schema: serde_json::json!({"type": "object"}),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(app.list_triggers(&alice).unwrap(), vec![alice_trigger]);
+        assert!(app.list_triggers(&bob).unwrap().is_empty());
+
+        let (bob_agent, _) = active_agent(&app, &bob);
+        let alice_task = app
+            .submit_task(
+                &alice,
+                SubmitTask {
+                    agent_id: alice_agent.id,
+                    idempotency_key: "shared-spelling".to_owned(),
+                    input: serde_json::json!({"prompt": "alice"}),
+                },
+            )
+            .unwrap();
+        let bob_task = app
+            .submit_task(
+                &bob,
+                SubmitTask {
+                    agent_id: bob_agent.id,
+                    idempotency_key: "shared-spelling".to_owned(),
+                    input: serde_json::json!({"prompt": "bob"}),
+                },
+            )
+            .unwrap();
+        assert_ne!(alice_task.id, bob_task.id);
+        assert_eq!(alice_task.actor.as_str(), "human-alice");
+        assert_eq!(bob_task.actor.as_str(), "human-bob");
     }
 
     #[test]

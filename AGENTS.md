@@ -34,8 +34,10 @@ published to a registry.
    credential-free verified authority.
 2. Tenant, actor, executor, request id and receive time are server-derived. Request bodies cannot
    assert them.
-3. Every store operation is tenant-scoped by construction. A global lookup followed by filtering is
-   not accepted.
+3. Every store operation is tenant-scoped by construction. Human-owned agents, their revisions,
+   tasks, and triggers are additionally scoped to the verified authority subject; tenant membership
+   never implies access to another principal's agent. A global lookup followed by filtering is not
+   accepted.
 4. Agent revisions are immutable. Activation is a compare-and-swap decision and running work pins
    an exact revision.
 5. A capability mapping only narrows a Connector operation. It never manufactures authority,
