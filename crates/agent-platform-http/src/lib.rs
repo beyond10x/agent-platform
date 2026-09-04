@@ -1061,7 +1061,7 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    fn service() -> Router {
+    fn service_for(app: Application, token: &str, subject: &str) -> Router {
         let scopes = [
             AGENTS_MANAGE,
             AGENTS_READ,
@@ -1076,17 +1076,22 @@ mod tests {
         .map(str::to_owned);
         let authority = VerifiedAuthority::new(
             TenantId::new("tenant-one").unwrap(),
-            SubjectId::new("human-alice").unwrap(),
+            SubjectId::new(subject).unwrap(),
             None,
             None,
             scopes,
         )
         .unwrap();
-        let verifier = DevelopmentVerifier::new("a-development-secret", authority).unwrap();
-        router(HttpState::new(
+        let verifier = DevelopmentVerifier::new(token, authority).unwrap();
+        router(HttpState::new(app, Arc::new(verifier)))
+    }
+
+    fn service() -> Router {
+        service_for(
             Application::new(Arc::new(EmptyCatalog)),
-            Arc::new(verifier),
-        ))
+            "a-development-secret",
+            "human-alice",
+        )
     }
 
     fn request(method: Method, path: &str, body: &str, token: Option<&str>) -> Request<Body> {
@@ -1253,6 +1258,67 @@ mod tests {
         assert_eq!(task["agent_revision"], 1);
         assert_eq!(task["status"], "accepted");
         assert_eq!(task["actor"], "human-alice");
+    }
+
+    #[tokio::test]
+    async fn same_tenant_http_callers_cannot_enumerate_or_fetch_foreign_agents() {
+        let application = Application::new(Arc::new(EmptyCatalog));
+        let alice = service_for(
+            application.clone(),
+            "alice-development-secret",
+            "human-alice",
+        );
+        let bob = service_for(application, "bob-development-secret", "human-bob");
+        let created = alice
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/v1/agents",
+                r#"{"name":"Alice private agent"}"#,
+                Some("alice-development-secret"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created = json_body(created).await;
+        let agent_id = created["id"].as_str().unwrap();
+
+        let alice_agents = alice
+            .oneshot(request(
+                Method::GET,
+                "/v1/agents",
+                "",
+                Some("alice-development-secret"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(alice_agents.status(), StatusCode::OK);
+        assert_eq!(json_body(alice_agents).await.as_array().unwrap().len(), 1);
+
+        let bob_agents = bob
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/v1/agents",
+                "",
+                Some("bob-development-secret"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(bob_agents.status(), StatusCode::OK);
+        assert!(json_body(bob_agents).await.as_array().unwrap().is_empty());
+
+        let foreign = bob
+            .oneshot(request(
+                Method::GET,
+                &format!("/v1/agents/{agent_id}"),
+                "",
+                Some("bob-development-secret"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        assert_eq!(json_body(foreign).await["code"], "not_found");
     }
 
     #[test]
