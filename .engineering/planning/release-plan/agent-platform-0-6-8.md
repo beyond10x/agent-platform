@@ -2,12 +2,12 @@
 format: aep.planning-md/1
 id: release-plan:agent-platform-0-6-8
 kind: release-plan
-status: active
+status: implemented
 title: Release Agent Platform 0.6.8
 summary: Ship the principal-owned agent isolation fix and promote only Agent Platform into Devcenter.
 relations:
 - delivers: story:principal-owned-agent-isolation
-revision: 2
+revision: 3
 ---
 ## Intent
 
