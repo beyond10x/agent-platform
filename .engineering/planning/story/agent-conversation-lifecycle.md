@@ -32,7 +32,7 @@ scope:
   path: crates/agent-platform-openapi/src/lib.rs
 - confidence: cited
   path: ess/system
-revision: 12
+revision: 14
 ---
 ## Outcome
 
@@ -77,3 +77,15 @@ The complete workspace fmt/clippy/test gate passed after correcting main-agent h
 ## Latest live result
 
 The corrected typed-history candidate was built and applied locally. The unchanged real-provider conversation acceptance ran once and failed on recall with provider category reasoning_extraction, matching the previous diagnostic classification. Proper role projection is verified in source but did not resolve this provider refusal. The failure remains visible beside partial output, and no prompt/assertion/retry-policy change was made to obtain a pass. Broader conversation reliability remains incomplete.
+
+## Composed connector execution evidence
+
+The composed connector-to-profile-to-agent acceptance needs evidence that the model actually requested the bound tool and that its execution completed. Existing task_event_sink discards Harness ToolRequested and ToolCompleted observations. The generic Connector's returned reference is deterministic per operation/connection and is not sufficient evidence of one invocation.
+
+Emit bounded structured operational observations for those two existing Harness events, retaining only task/attempt/call identifiers, tool name and success/failure. Never log call arguments, model text, provider outputs, credentials or authority values. Keep all API, store and event wire contracts unchanged. Local acceptance correlates these actual runtime observations with the independently admitted task, compiled profile and successful task result. Regression coverage must show sensitive request/result fields never enter the observation. This is execution evidence, not a substitute for required full composed acceptance or a claim to fix the existing conversation recall refusal.
+
+## Connector execution observation source verification
+
+The value-free observation projection is implemented for actual Harness ToolRequested and ToolCompleted events at the task boundary. It records task, attempt and call identifiers, tool name on request, and failure state on completion. All other Harness events are excluded from this operational log, including arguments, text and provider result bodies. Wire schemas, persistent state and task APIs are unchanged.
+
+The source gate passes formatting, locked all-target clippy,46workspace tests and strict planning validation. ESS validation and compilation pass over the unchanged specification. A regression checks request-argument exclusion, model-text exclusion, and both successful and failed completions. Real composed provider execution remains pending the consuming local rollout; source tests do not establish that journey or resolve the existing conversation refusal.

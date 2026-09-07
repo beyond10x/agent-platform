@@ -903,6 +903,26 @@ fn fail_execution(app: &Application, plan: &TaskExecutionPlan, code: &str, messa
     );
 }
 
+fn tool_execution_observation(
+    task_id: &TaskId,
+    attempt_id: &AttemptId,
+    event: &LoopEvent,
+) -> Option<serde_json::Value> {
+    let detail = match event {
+        LoopEvent::ToolRequested { call, .. } => serde_json::json!({
+            "phase": "requested", "call_id": call.call_id, "tool_name": call.name,
+        }),
+        LoopEvent::ToolCompleted { call_id, failed } => serde_json::json!({
+            "phase": "completed", "call_id": call_id, "failed": failed,
+        }),
+        _ => return None,
+    };
+    Some(serde_json::json!({
+        "observation": "agent_platform_tool_execution", "task_id": task_id,
+        "attempt_id": attempt_id, "detail": detail,
+    }))
+}
+
 fn task_event_sink(
     app: &Application,
     tenant_id: &TenantId,
@@ -913,36 +933,43 @@ fn task_event_sink(
     let tenant_id = tenant_id.clone();
     let task_id = task_id.clone();
     let attempt_id = attempt_id.clone();
-    Arc::new(move |event: LoopEvent| match event {
-        LoopEvent::TextDelta { text } => {
-            let _ = app.append_task_text(&tenant_id, &task_id, &attempt_id, now_ms(), text);
+    Arc::new(move |event: LoopEvent| {
+        if let Some(observation) = tool_execution_observation(&task_id, &attempt_id, &event) {
+            // Operational evidence contains identifiers and outcomes only. Arguments, provider
+            // results and model text must never enter this log projection.
+            eprintln!("{observation}");
         }
-        LoopEvent::ContextChanged { revision, .. } => {
-            let _ = app.append_task_context_changed(
-                &tenant_id,
-                &task_id,
-                &attempt_id,
-                now_ms(),
+        match event {
+            LoopEvent::TextDelta { text } => {
+                let _ = app.append_task_text(&tenant_id, &task_id, &attempt_id, now_ms(), text);
+            }
+            LoopEvent::ContextChanged { revision, .. } => {
+                let _ = app.append_task_context_changed(
+                    &tenant_id,
+                    &task_id,
+                    &attempt_id,
+                    now_ms(),
+                    revision,
+                );
+            }
+            LoopEvent::InventoryChanged {
                 revision,
-            );
+                published_tools,
+            } => {
+                let _ = app.append_task_inventory_changed(
+                    &tenant_id,
+                    &task_id,
+                    &attempt_id,
+                    now_ms(),
+                    revision,
+                    published_tools
+                        .into_iter()
+                        .map(|name| name.to_string())
+                        .collect(),
+                );
+            }
+            _ => {}
         }
-        LoopEvent::InventoryChanged {
-            revision,
-            published_tools,
-        } => {
-            let _ = app.append_task_inventory_changed(
-                &tenant_id,
-                &task_id,
-                &attempt_id,
-                now_ms(),
-                revision,
-                published_tools
-                    .into_iter()
-                    .map(|name| name.to_string())
-                    .collect(),
-            );
-        }
-        _ => {}
     })
 }
 
@@ -1399,5 +1426,53 @@ mod tests {
         assert_eq!(approval.operation_ref, "todo.item.create");
         assert_eq!(approval.input, call.arguments);
         assert_eq!(approval.context, context);
+    }
+}
+
+#[cfg(test)]
+mod tool_observation_tests {
+    use super::*;
+
+    #[test]
+    fn execution_observations_exclude_arguments_and_model_text() {
+        let task = TaskId::new("task-observation").unwrap();
+        let attempt = AttemptId::new("attempt-observation").unwrap();
+        let call = serde_json::from_value(serde_json::json!({
+            "call_id":"call-observation", "name":"metrics_read",
+            "arguments":{"private":"must-not-be-logged"}
+        }))
+        .unwrap();
+        let event = LoopEvent::ToolRequested {
+            call,
+            operation: None,
+            subjects: Vec::new(),
+        };
+        let observation = tool_execution_observation(&task, &attempt, &event).unwrap();
+        assert_eq!(
+            observation["detail"],
+            serde_json::json!({
+                "phase":"requested", "call_id":"call-observation", "tool_name":"metrics_read"
+            })
+        );
+        assert!(!observation.to_string().contains("must-not-be-logged"));
+        for failed in [false, true] {
+            let event = LoopEvent::ToolCompleted {
+                call_id: harness_wire::CallId::new("call-observation").unwrap(),
+                failed,
+            };
+            let completion = tool_execution_observation(&task, &attempt, &event).unwrap();
+            assert_eq!(completion["detail"]["failed"], failed);
+            assert_eq!(completion["task_id"], "task-observation");
+        }
+        assert!(
+            tool_execution_observation(
+                &task,
+                &attempt,
+                &LoopEvent::TextDelta {
+                    text: "private model text".into()
+                }
+            )
+            .is_none()
+        );
     }
 }
