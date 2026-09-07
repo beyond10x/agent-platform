@@ -28,7 +28,7 @@ scope:
   path: crates/agent-platform-openapi/src/lib.rs
 - confidence: cited
   path: ess/system
-revision: 6
+revision: 7
 ---
 ## Outcome
 
@@ -54,4 +54,4 @@ Core lifecycle requests and conversation data, application persistence and admis
 
 ## Validation so far
 
-The complete Rust formatting, clippy with warnings denied, and workspace test gates pass for the initial lifecycle implementation. Application regression tests exercise isolated server-derived conversation context, exact task retries, owner and tenant isolation, active-work refusal, atomic revision editing, retained terminal evidence, legacy-history migration, empty profile creation, profile-in-use refusal and persistent clear/delete/retirement. The deterministic OpenAPI digest was updated from the changed typed route catalog. The shared model-input-schema check is exported from core so downstream profile UX can preflight the same contract instead of guessing types or masking a model refusal. Composed local browser verification remains pending; this story stays active.
+The complete Rust workspace gate, ESS validation and strict AEP validation passed for the lifecycle implementation. Official client path-segment tests and clippy passed. The composed local deployment now passes actual browser repeated agent creation, revision editing, agent retirement, capability profile creation/bulk updates, assigned-profile refusal and profile retirement through reloads. The first real Claude turn succeeded, while a subsequent context-recall turn failed with a generic harness_incomplete result. Local conversation acceptance remains incomplete. Preserve distinct bounded Harness stop explanations and show partial output together with its failure before investigating the actual stop; do not reinterpret an incomplete attempt as success.

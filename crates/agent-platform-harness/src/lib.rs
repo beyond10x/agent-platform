@@ -601,7 +601,30 @@ fn execution_outcome(outcome: LoopOutcome) -> Result<UserModelRunOutcome, Execut
                 checkpoint: Box::new(checkpoint),
             })
             .ok_or(ExecutionError::HarnessConfiguration),
-        _ => Err(ExecutionError::Incomplete),
+        stop => Err(ExecutionError::Incomplete {
+            reason: incomplete_reason(&stop),
+        }),
+    }
+}
+
+fn incomplete_reason(stop: &LoopStop) -> &'static str {
+    match stop {
+        LoopStop::MaxTurns { .. } => "turn limit reached",
+        LoopStop::MaxInputTokens { .. } => "input token limit reached",
+        LoopStop::MaxOutputTokens { .. } => "output token limit reached",
+        LoopStop::MaxCost { .. } => "cost limit reached",
+        LoopStop::BudgetUnobservable { .. } => "provider usage could not be verified",
+        LoopStop::Deadline { .. } => "run deadline reached",
+        LoopStop::Cancelled { .. } => "run cancelled",
+        LoopStop::ProviderIncomplete { reason } => match reason.as_str() {
+            "max_output_tokens" => "provider output token limit reached",
+            "refusal" => "provider declined the response",
+            "pause_turn" => "provider paused the response",
+            "stop_sequence" => "provider stop sequence reached",
+            _ => "provider ended the response early",
+        },
+        LoopStop::Unstructured { .. } => "response did not match the requested structure",
+        LoopStop::Completed | LoopStop::AwaitingApproval { .. } => "completion was not recorded",
     }
 }
 
@@ -629,8 +652,8 @@ pub enum ExecutionError {
     Cancelled,
     #[error("the Harness run configuration is invalid")]
     HarnessConfiguration,
-    #[error("the Harness run stopped before completing")]
-    Incomplete,
+    #[error("the Harness run stopped before completing: {reason}")]
+    Incomplete { reason: &'static str },
     #[error("the current Workspace coding session or actor view is unavailable")]
     WorkspaceUnavailable,
     #[error("the execution worker is unavailable")]
@@ -652,7 +675,7 @@ impl ExecutionError {
             Self::Unsupported => "model_feature_unsupported",
             Self::Cancelled => "model_attempt_cancelled",
             Self::HarnessConfiguration => "harness_configuration_invalid",
-            Self::Incomplete => "harness_incomplete",
+            Self::Incomplete { .. } => "harness_incomplete",
             Self::WorkspaceUnavailable => "workspace_actor_view_unavailable",
             Self::WorkerUnavailable => "execution_worker_unavailable",
         }
