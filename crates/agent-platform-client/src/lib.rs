@@ -41,14 +41,18 @@ impl AgentPlatformClient {
         id: &AgentId,
         request: &UpdateAgent,
     ) -> Result<Agent, ClientError> {
-        self.patch_json(bearer, &format!("v1/agents/{id}"), request)
-            .await
+        self.patch_json(
+            bearer,
+            &format!("v1/agents/{id}", id = segment(id)?),
+            request,
+        )
+        .await
     }
 
     pub async fn retire_agent(&self, bearer: &str, id: &AgentId) -> Result<(), ClientError> {
         self.delete(
             bearer,
-            &format!("v1/agents/{id}"),
+            &format!("v1/agents/{id}", id = segment(id)?),
             None::<&ConversationRevision>,
         )
         .await
@@ -61,7 +65,7 @@ impl AgentPlatformClient {
     ) -> Result<(), ClientError> {
         self.delete(
             bearer,
-            &format!("v1/capability-profiles/{id}"),
+            &format!("v1/capability-profiles/{id}", id = segment(id)?),
             None::<&ConversationRevision>,
         )
         .await
@@ -72,8 +76,11 @@ impl AgentPlatformClient {
         bearer: &str,
         agent: &AgentId,
     ) -> Result<Vec<Conversation>, ClientError> {
-        self.get_json(bearer, &format!("v1/agents/{agent}/conversations"))
-            .await
+        self.get_json(
+            bearer,
+            &format!("v1/agents/{agent}/conversations", agent = segment(agent)?),
+        )
+        .await
     }
 
     pub async fn create_conversation(
@@ -82,8 +89,12 @@ impl AgentPlatformClient {
         agent: &AgentId,
         request: &CreateConversation,
     ) -> Result<Conversation, ClientError> {
-        self.post_json(bearer, &format!("v1/agents/{agent}/conversations"), request)
-            .await
+        self.post_json(
+            bearer,
+            &format!("v1/agents/{agent}/conversations", agent = segment(agent)?),
+            request,
+        )
+        .await
     }
 
     pub async fn update_conversation(
@@ -95,7 +106,11 @@ impl AgentPlatformClient {
     ) -> Result<Conversation, ClientError> {
         self.patch_json(
             bearer,
-            &format!("v1/agents/{agent}/conversations/{id}"),
+            &format!(
+                "v1/agents/{agent}/conversations/{id}",
+                agent = segment(agent)?,
+                id = segment(id)?
+            ),
             request,
         )
         .await
@@ -110,7 +125,11 @@ impl AgentPlatformClient {
     ) -> Result<(), ClientError> {
         self.delete(
             bearer,
-            &format!("v1/agents/{agent}/conversations/{id}"),
+            &format!(
+                "v1/agents/{agent}/conversations/{id}",
+                agent = segment(agent)?,
+                id = segment(id)?
+            ),
             Some(request),
         )
         .await
@@ -125,7 +144,11 @@ impl AgentPlatformClient {
     ) -> Result<Conversation, ClientError> {
         self.post_json(
             bearer,
-            &format!("v1/agents/{agent}/conversations/{id}/clear"),
+            &format!(
+                "v1/agents/{agent}/conversations/{id}/clear",
+                agent = segment(agent)?,
+                id = segment(id)?
+            ),
             request,
         )
         .await
@@ -139,7 +162,11 @@ impl AgentPlatformClient {
     ) -> Result<Vec<Task>, ClientError> {
         self.get_json(
             bearer,
-            &format!("v1/agents/{agent}/conversations/{id}/tasks"),
+            &format!(
+                "v1/agents/{agent}/conversations/{id}/tasks",
+                agent = segment(agent)?,
+                id = segment(id)?
+            ),
         )
         .await
     }
@@ -191,8 +218,11 @@ impl AgentPlatformClient {
     }
 
     pub async fn get_agent(&self, bearer: &str, agent_id: &AgentId) -> Result<Agent, ClientError> {
-        self.get_json(bearer, &format!("v1/agents/{agent_id}"))
-            .await
+        self.get_json(
+            bearer,
+            &format!("v1/agents/{agent_id}", agent_id = segment(agent_id)?),
+        )
+        .await
     }
 
     pub async fn create_agent(
@@ -209,8 +239,15 @@ impl AgentPlatformClient {
         agent_id: &AgentId,
         request: &RevisionSpec,
     ) -> Result<AgentRevision, ClientError> {
-        self.post_json(bearer, &format!("v1/agents/{agent_id}/revisions"), request)
-            .await
+        self.post_json(
+            bearer,
+            &format!(
+                "v1/agents/{agent_id}/revisions",
+                agent_id = segment(agent_id)?
+            ),
+            request,
+        )
+        .await
     }
 
     pub async fn list_revisions(
@@ -218,8 +255,14 @@ impl AgentPlatformClient {
         bearer: &str,
         agent_id: &AgentId,
     ) -> Result<Vec<AgentRevision>, ClientError> {
-        self.get_json(bearer, &format!("v1/agents/{agent_id}/revisions"))
-            .await
+        self.get_json(
+            bearer,
+            &format!(
+                "v1/agents/{agent_id}/revisions",
+                agent_id = segment(agent_id)?
+            ),
+        )
+        .await
     }
 
     pub async fn activate_revision(
@@ -228,8 +271,15 @@ impl AgentPlatformClient {
         agent_id: &AgentId,
         request: &ActivateRevision,
     ) -> Result<Agent, ClientError> {
-        self.post_json(bearer, &format!("v1/agents/{agent_id}/activate"), request)
-            .await
+        self.post_json(
+            bearer,
+            &format!(
+                "v1/agents/{agent_id}/activate",
+                agent_id = segment(agent_id)?
+            ),
+            request,
+        )
+        .await
     }
 
     pub async fn list_capability_profiles(
@@ -256,7 +306,10 @@ impl AgentPlatformClient {
     ) -> Result<serde_json::Value, ClientError> {
         self.patch_json(
             bearer,
-            &format!("v1/capability-profiles/{profile_id}"),
+            &format!(
+                "v1/capability-profiles/{profile_id}",
+                profile_id = segment(profile_id)?
+            ),
             request,
         )
         .await
@@ -285,7 +338,11 @@ impl AgentPlatformClient {
     }
 
     pub async fn get_task(&self, bearer: &str, task_id: &TaskId) -> Result<Task, ClientError> {
-        self.get_json(bearer, &format!("v1/tasks/{task_id}")).await
+        self.get_json(
+            bearer,
+            &format!("v1/tasks/{task_id}", task_id = segment(task_id)?),
+        )
+        .await
     }
 
     pub async fn list_task_approvals(
@@ -293,8 +350,11 @@ impl AgentPlatformClient {
         bearer: &str,
         task_id: &TaskId,
     ) -> Result<Vec<PendingApproval>, ClientError> {
-        self.get_json(bearer, &format!("v1/tasks/{task_id}/approvals"))
-            .await
+        self.get_json(
+            bearer,
+            &format!("v1/tasks/{task_id}/approvals", task_id = segment(task_id)?),
+        )
+        .await
     }
 
     pub async fn resolve_task_approval(
@@ -306,7 +366,11 @@ impl AgentPlatformClient {
     ) -> Result<PendingApproval, ClientError> {
         self.post_json(
             bearer,
-            &format!("v1/tasks/{task_id}/approvals/{approval_id}"),
+            &format!(
+                "v1/tasks/{task_id}/approvals/{approval_id}",
+                task_id = segment(task_id)?,
+                approval_id = segment(approval_id)?
+            ),
             resolution,
         )
         .await
@@ -320,7 +384,10 @@ impl AgentPlatformClient {
     ) -> Result<reqwest::Response, ClientError> {
         let response = self
             .http
-            .get(self.endpoint(&format!("v1/tasks/{task_id}/events"))?)
+            .get(self.endpoint(&format!(
+                "v1/tasks/{task_id}/events",
+                task_id = segment(task_id)?
+            ))?)
             .header(AUTHORIZATION, authorization(bearer)?)
             .send()
             .await
@@ -434,5 +501,48 @@ fn require_success(response: reqwest::Response) -> Result<reqwest::Response, Cli
         Ok(response)
     } else {
         Err(ClientError::Refused(response.status().as_u16()))
+    }
+}
+
+// Dynamic identifiers must remain exactly one URL path segment. In particular,
+// dot segments must never be normalized into a different endpoint.
+fn segment(value: &impl std::fmt::Display) -> Result<String, ClientError> {
+    let value = value.to_string();
+    if value.is_empty() || value == "." || value == ".." {
+        return Err(ClientError::Configuration);
+    }
+    let mut url = Url::parse("https://example.test/").map_err(|_| ClientError::Configuration)?;
+    url.path_segments_mut()
+        .map_err(|()| ClientError::Configuration)?
+        .push(&value);
+    Ok(url.path()[1..].to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifiers_cannot_change_routes() {
+        for invalid in ["", ".", ".."] {
+            assert!(segment(&invalid).is_err());
+        }
+        let client = AgentPlatformClient::new("https://example.test/").unwrap();
+        for raw in [
+            "../agents/other",
+            "x?delete=true",
+            "x#fragment",
+            "%2e%2e",
+            "a/b",
+        ] {
+            let encoded = segment(&raw).unwrap();
+            assert!(!encoded.contains('/'));
+            let url = client
+                .endpoint(&format!("v1/agents/{encoded}/conversations"))
+                .unwrap();
+            assert_eq!(url.path_segments().unwrap().count(), 4);
+            assert!(url.query().is_none());
+            assert!(url.fragment().is_none());
+        }
     }
 }
