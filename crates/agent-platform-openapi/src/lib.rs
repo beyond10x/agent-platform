@@ -9,12 +9,15 @@ use agent_platform_core::{
     PendingApproval, ResolveApproval, RevisionSpec, SubmitTask, Task, TaskEvent, Trigger,
     UpdateCapabilityProfile,
 };
+use agent_platform_core::{
+    Conversation, ConversationRevision, CreateConversation, UpdateAgent, UpdateConversation,
+};
 use schemars::JsonSchema;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const EXPECTED_OPENAPI_SHA256: &str =
-    "155c23e01327526310e57f444fff2b3d788105c700dd78f44af95a621342c3aa";
+    "080d9ab82da23bb042d62b49fff1534ec926647e7c4239f8de12e50d6c60a657";
 
 /// Builds the complete `OpenAPI` document as a deterministic JSON value.
 ///
@@ -25,6 +28,12 @@ pub const EXPECTED_OPENAPI_SHA256: &str =
 /// errors covered by the projection tests.
 pub fn document() -> Value {
     let mut schemas = BTreeMap::new();
+    register::<UpdateAgent>("UpdateAgent", &mut schemas);
+    register::<Conversation>("Conversation", &mut schemas);
+    register::<Vec<Conversation>>("ConversationList", &mut schemas);
+    register::<CreateConversation>("CreateConversation", &mut schemas);
+    register::<UpdateConversation>("UpdateConversation", &mut schemas);
+    register::<ConversationRevision>("ConversationRevision", &mut schemas);
     register::<ProblemDocument>("ProblemDocument", &mut schemas);
     register::<CreateAgent>("CreateAgent", &mut schemas);
     register::<Agent>("Agent", &mut schemas);
@@ -118,7 +127,9 @@ fn operation(route: &RouteSpec) -> Value {
 
 fn responses(route: &RouteSpec) -> Value {
     let mut responses = Map::new();
-    let success = if route.operation == Operation::Liveness {
+    let success = if route.success_status == 204 {
+        json!({ "description": "The resource was removed from normal discovery; execution evidence is retained." })
+    } else if route.operation == Operation::Liveness {
         json!({
             "description": "The service process is alive.",
             "content": { "text/plain": { "schema": { "type": "string", "const": "ok\n" } } }
@@ -151,6 +162,12 @@ fn responses(route: &RouteSpec) -> Value {
 
 const fn request_schema(operation: Operation) -> Option<&'static str> {
     match operation {
+        Operation::UpdateAgent => Some("UpdateAgent"),
+        Operation::CreateConversation => Some("CreateConversation"),
+        Operation::UpdateConversation => Some("UpdateConversation"),
+        Operation::ClearConversation | Operation::DeleteConversation => {
+            Some("ConversationRevision")
+        }
         Operation::CreateAgent => Some("CreateAgent"),
         Operation::CreateRevision => Some("RevisionSpec"),
         Operation::ActivateRevision => Some("ActivateRevision"),
@@ -160,6 +177,10 @@ const fn request_schema(operation: Operation) -> Option<&'static str> {
         Operation::ResolveTaskApproval => Some("ResolveApproval"),
         Operation::CreateTrigger => Some("CreateTrigger"),
         Operation::Liveness
+        | Operation::ListConversations
+        | Operation::ListConversationTasks
+        | Operation::RetireAgent
+        | Operation::RetireCapabilityProfile
         | Operation::ListAgents
         | Operation::GetAgent
         | Operation::ListRevisions
@@ -174,38 +195,54 @@ const fn request_schema(operation: Operation) -> Option<&'static str> {
 
 const fn response_schema(operation: Operation) -> &'static str {
     match operation {
+        Operation::ListConversations => "ConversationList",
+        Operation::CreateConversation
+        | Operation::UpdateConversation
+        | Operation::ClearConversation => "Conversation",
+        Operation::RetireAgent
+        | Operation::RetireCapabilityProfile
+        | Operation::DeleteConversation
+        | Operation::Liveness => "ProblemDocument",
         Operation::ListAgents => "AgentList",
-        Operation::CreateAgent | Operation::GetAgent | Operation::ActivateRevision => "Agent",
+        Operation::UpdateAgent
+        | Operation::CreateAgent
+        | Operation::GetAgent
+        | Operation::ActivateRevision => "Agent",
         Operation::ListRevisions => "AgentRevisionList",
         Operation::CreateRevision => "AgentRevision",
         Operation::ListCapabilityProfiles => "CapabilityProfileList",
         Operation::CreateCapabilityProfile | Operation::UpdateCapabilityProfile => {
             "CapabilityProfile"
         }
-        Operation::ListTasks => "TaskList",
+        Operation::ListConversationTasks | Operation::ListTasks => "TaskList",
         Operation::SubmitTask | Operation::SubmitCodingSessionTurn | Operation::GetTask => "Task",
         Operation::StreamTaskEvents => "TaskEvent",
         Operation::ListTaskApprovals => "PendingApprovalList",
         Operation::ResolveTaskApproval => "PendingApproval",
         Operation::ListTriggers => "TriggerList",
         Operation::CreateTrigger => "Trigger",
-        Operation::Liveness => "ProblemDocument",
     }
 }
 
 fn path_parameters(path: &str) -> Vec<Value> {
-    ["agent_id", "profile_id", "task_id", "approval_id"]
-        .into_iter()
-        .filter(|name| path.contains(&format!("{{{name}}}")))
-        .map(|name| {
-            json!({
-                "name": name,
-                "in": "path",
-                "required": true,
-                "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
-            })
+    [
+        "agent_id",
+        "profile_id",
+        "task_id",
+        "approval_id",
+        "conversation_id",
+    ]
+    .into_iter()
+    .filter(|name| path.contains(&format!("{{{name}}}")))
+    .map(|name| {
+        json!({
+            "name": name,
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
         })
-        .collect()
+    })
+    .collect()
 }
 
 fn schema_ref(name: &str) -> Value {

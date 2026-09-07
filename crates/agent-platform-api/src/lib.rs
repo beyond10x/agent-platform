@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 pub const LIVENESS_PATH: &str = "/livez";
 pub const AGENTS_PATH: &str = "/v1/agents";
 pub const AGENT_PATH: &str = "/v1/agents/{agent_id}";
+pub const CONVERSATIONS_PATH: &str = "/v1/agents/{agent_id}/conversations";
+pub const CONVERSATION_PATH: &str = "/v1/agents/{agent_id}/conversations/{conversation_id}";
+pub const CONVERSATION_TASKS_PATH: &str =
+    "/v1/agents/{agent_id}/conversations/{conversation_id}/tasks";
+pub const CONVERSATION_CLEAR_PATH: &str =
+    "/v1/agents/{agent_id}/conversations/{conversation_id}/clear";
 pub const REVISIONS_PATH: &str = "/v1/agents/{agent_id}/revisions";
 pub const ACTIVATE_PATH: &str = "/v1/agents/{agent_id}/activate";
 pub const CAPABILITY_PROFILES_PATH: &str = "/v1/capability-profiles";
@@ -28,6 +34,7 @@ pub enum Method {
     Get,
     Post,
     Patch,
+    Delete,
 }
 
 impl Method {
@@ -36,12 +43,22 @@ impl Method {
             Self::Get => "GET",
             Self::Post => "POST",
             Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Operation {
+    UpdateAgent,
+    RetireAgent,
+    RetireCapabilityProfile,
+    ListConversations,
+    CreateConversation,
+    UpdateConversation,
+    DeleteConversation,
+    ClearConversation,
+    ListConversationTasks,
     Liveness,
     ListAgents,
     CreateAgent,
@@ -66,6 +83,15 @@ pub enum Operation {
 impl Operation {
     pub const fn id(self) -> &'static str {
         match self {
+            Self::UpdateAgent => "updateAgent",
+            Self::RetireAgent => "retireAgent",
+            Self::RetireCapabilityProfile => "retireCapabilityProfile",
+            Self::ListConversations => "listConversations",
+            Self::CreateConversation => "createConversation",
+            Self::UpdateConversation => "updateConversation",
+            Self::DeleteConversation => "deleteConversation",
+            Self::ClearConversation => "clearConversation",
+            Self::ListConversationTasks => "listConversationTasks",
             Self::Liveness => "getLiveness",
             Self::ListAgents => "listAgents",
             Self::CreateAgent => "createAgent",
@@ -90,6 +116,15 @@ impl Operation {
 
     pub const fn summary(self) -> &'static str {
         match self {
+            Self::UpdateAgent => "Atomically edit an agent and activate a new revision",
+            Self::RetireAgent => "Retire an idle agent while retaining execution evidence",
+            Self::RetireCapabilityProfile => "Retire an unassigned capability profile",
+            Self::ListConversations => "List the owner's visible agent conversations",
+            Self::CreateConversation => "Create an empty agent conversation",
+            Self::UpdateConversation => "Rename a conversation with compare-and-swap",
+            Self::DeleteConversation => "Remove an idle conversation from normal discovery",
+            Self::ClearConversation => "Replace an idle conversation with an empty conversation",
+            Self::ListConversationTasks => "Read only the selected conversation's tasks",
             Self::Liveness => "Check process liveness",
             Self::ListAgents => "List agents",
             Self::CreateAgent => "Create an agent",
@@ -125,6 +160,69 @@ pub struct RouteSpec {
 }
 
 pub const ROUTES: &[RouteSpec] = &[
+    RouteSpec {
+        method: Method::Patch,
+        path: AGENT_PATH,
+        operation: Operation::UpdateAgent,
+        authenticated: true,
+        success_status: 200,
+    },
+    RouteSpec {
+        method: Method::Delete,
+        path: AGENT_PATH,
+        operation: Operation::RetireAgent,
+        authenticated: true,
+        success_status: 204,
+    },
+    RouteSpec {
+        method: Method::Delete,
+        path: CAPABILITY_PROFILE_PATH,
+        operation: Operation::RetireCapabilityProfile,
+        authenticated: true,
+        success_status: 204,
+    },
+    RouteSpec {
+        method: Method::Get,
+        path: CONVERSATIONS_PATH,
+        operation: Operation::ListConversations,
+        authenticated: true,
+        success_status: 200,
+    },
+    RouteSpec {
+        method: Method::Post,
+        path: CONVERSATIONS_PATH,
+        operation: Operation::CreateConversation,
+        authenticated: true,
+        success_status: 201,
+    },
+    RouteSpec {
+        method: Method::Patch,
+        path: CONVERSATION_PATH,
+        operation: Operation::UpdateConversation,
+        authenticated: true,
+        success_status: 200,
+    },
+    RouteSpec {
+        method: Method::Delete,
+        path: CONVERSATION_PATH,
+        operation: Operation::DeleteConversation,
+        authenticated: true,
+        success_status: 204,
+    },
+    RouteSpec {
+        method: Method::Post,
+        path: CONVERSATION_CLEAR_PATH,
+        operation: Operation::ClearConversation,
+        authenticated: true,
+        success_status: 201,
+    },
+    RouteSpec {
+        method: Method::Get,
+        path: CONVERSATION_TASKS_PATH,
+        operation: Operation::ListConversationTasks,
+        authenticated: true,
+        success_status: 200,
+    },
     RouteSpec {
         method: Method::Get,
         path: LIVENESS_PATH,

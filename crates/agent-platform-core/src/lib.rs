@@ -93,6 +93,7 @@ macro_rules! id_type {
 id_type!(TenantId, "tenant id");
 id_type!(SubjectId, "subject id");
 id_type!(AgentId, "agent id");
+id_type!(ConversationId, "conversation id");
 id_type!(CapabilityProfileId, "capability profile id");
 id_type!(TaskId, "task id");
 id_type!(AttemptId, "attempt id");
@@ -123,6 +124,55 @@ impl CreateAgent {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_text("agent name", &self.name, MAX_NAME_BYTES)
     }
+}
+
+/// One atomic name and immutable revision update, guarded by the current activation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateAgent {
+    pub name: String,
+    pub expected_active_revision: Option<u64>,
+    pub spec: RevisionSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Conversation {
+    pub id: ConversationId,
+    pub agent_id: AgentId,
+    pub created_by: SubjectId,
+    pub title: String,
+    pub revision: u64,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at_ms: Option<u64>,
+    #[serde(default)]
+    pub task_ids: Vec<TaskId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateConversation {
+    pub title: String,
+}
+
+impl CreateConversation {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_text("conversation title", &self.title, MAX_NAME_BYTES)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConversation {
+    pub title: String,
+    pub expected_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationRevision {
+    pub expected_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -317,7 +367,7 @@ pub struct UpdateCapabilityProfile {
 impl CreateCapabilityProfile {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_text("capability profile name", &self.name, MAX_NAME_BYTES)?;
-        if self.mappings.is_empty() || self.mappings.len() > 128 {
+        if self.mappings.len() > 128 {
             return Err(ValidationError::InvalidText {
                 field: "capability mappings",
                 maximum: 128,
@@ -396,6 +446,12 @@ pub struct ProjectContext {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConversationInput {
+    AgentConversation {
+        conversation_id: ConversationId,
+        prompt: String,
+        #[serde(default)]
+        messages: Vec<ConversationMessage>,
+    },
     ProjectConversation {
         prompt: String,
         #[serde(default)]
@@ -659,6 +715,62 @@ pub struct Trigger {
     pub authority_subject: SubjectId,
     pub delegation_id: Option<DelegationId>,
     pub created_at_ms: u64,
+}
+
+/// The Messages provider accepts JSON Schema object inputs, but refuses unconstrained property
+/// placeholders such as `{ "title": "DomainId" }`. Connectors may use those placeholders for
+/// non-model clients; an agent profile must fail before activation instead of turning every later
+/// model request into an opaque provider refusal.
+pub fn model_input_schema_supported(schema: &serde_json::Value) -> bool {
+    let Some(root) = schema.as_object() else {
+        return false;
+    };
+    if root.get("type").and_then(serde_json::Value::as_str) != Some("object") {
+        return false;
+    }
+    root.get("properties").is_none_or(|properties| {
+        properties
+            .as_object()
+            .is_some_and(|properties| properties.values().all(publishable_schema_node))
+    })
+}
+
+fn publishable_schema_node(schema: &serde_json::Value) -> bool {
+    let Some(schema) = schema.as_object() else {
+        return false;
+    };
+    let constrained = schema.contains_key("type")
+        || schema.contains_key("enum")
+        || schema.contains_key("const")
+        || schema.contains_key("$ref")
+        || schema.contains_key("anyOf")
+        || schema.contains_key("oneOf")
+        || schema.contains_key("allOf");
+    if !constrained {
+        return false;
+    }
+    if let Some(properties) = schema.get("properties")
+        && !properties
+            .as_object()
+            .is_some_and(|properties| properties.values().all(publishable_schema_node))
+    {
+        return false;
+    }
+    if let Some(items) = schema.get("items")
+        && !publishable_schema_node(items)
+    {
+        return false;
+    }
+    for keyword in ["anyOf", "oneOf", "allOf"] {
+        if let Some(branches) = schema.get(keyword)
+            && !branches.as_array().is_some_and(|branches| {
+                !branches.is_empty() && branches.iter().all(publishable_schema_node)
+            })
+        {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

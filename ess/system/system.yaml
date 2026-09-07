@@ -1,0 +1,5 @@
+format: ess/1
+system: agent_platform
+version: v1
+domains:
+  - agent_platform.control

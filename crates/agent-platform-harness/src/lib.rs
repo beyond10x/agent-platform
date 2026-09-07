@@ -848,9 +848,14 @@ fn task_prompt(input: &Value) -> Result<String, ExecutionError> {
         assembled.push_str(prompt);
         return Ok(assembled);
     }
-    if let Ok(ConversationInput::CodingSessionTurn {
-        prompt, messages, ..
-    }) = serde_json::from_value::<ConversationInput>(input.clone())
+    if let Ok(
+        ConversationInput::CodingSessionTurn {
+            prompt, messages, ..
+        }
+        | ConversationInput::AgentConversation {
+            prompt, messages, ..
+        },
+    ) = serde_json::from_value::<ConversationInput>(input.clone())
     {
         let prompt = prompt.trim();
         if prompt.is_empty() {

@@ -1,0 +1,52 @@
+domain: agent_platform.control
+
+summary: Durable ownership and conversation identity for the authenticated control plane.
+
+# Agent identity and fields are taken from the generated Agent OpenAPI schema. This
+# bounded model records persisted identities; retirement preserves their audit records.
+entities:
+  - name: agent_platform.control.Agent
+    identity:
+      name: agent_id
+      type: String
+    fields:
+      - name: tenant_id
+        type: String
+      - name: created_by
+        type: String
+      - name: name
+        type: String
+    relations:
+      - name: conversations
+        kind: owns
+        target: agent_platform.control.Conversation
+        cardinality: many
+        via: agent_id
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]
+
+  - name: agent_platform.control.Conversation
+    identity:
+      name: conversation_id
+      type: String
+    fields:
+      - name: agent_id
+        type: String
+      - name: created_by
+        type: String
+      - name: title
+        type: String
+      - name: revision
+        type: Integer
+      - name: created_at_ms
+        type: Integer
+      - name: deleted_at_ms
+        type: Optional<Integer>
+      - name: task_ids
+        type: List<String>
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]

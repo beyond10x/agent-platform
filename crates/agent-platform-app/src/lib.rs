@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+mod lifecycle;
+#[cfg(test)]
+mod lifecycle_tests;
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -19,6 +23,7 @@ use agent_platform_core::{
     TaskEvent, TaskEventKind, TaskFailure, TaskId, TaskStatus, TenantId, Trigger, TriggerId,
     UpdateCapabilityProfile, ValidationError,
 };
+use agent_platform_core::{Conversation, ConversationId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -99,6 +104,16 @@ pub struct TaskEventSubscription {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ApplicationError {
+    #[error("conversation was not found")]
+    ConversationNotFound,
+    #[error("conversation changed; refresh it before trying again")]
+    ConversationRevisionConflict,
+    #[error("work is still running; wait for it to finish before removing or clearing it")]
+    ActiveWork,
+    #[error(
+        "the capability profile is assigned to an active agent or task; change that assignment first"
+    )]
+    CapabilityProfileInUse,
     #[error("the verified authority lacks `{scope}`")]
     Forbidden { scope: &'static str },
     #[error("agent was not found")]
@@ -137,15 +152,21 @@ pub enum ApplicationError {
 const MAX_STATE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_APPROVAL_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
     tenants: BTreeMap<TenantId, TenantState>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TenantState {
+    #[serde(default)]
+    retired_agents: BTreeMap<AgentId, u64>,
+    #[serde(default)]
+    retired_profiles: BTreeMap<CapabilityProfileId, u64>,
+    #[serde(default)]
+    conversations: BTreeMap<ConversationId, Conversation>,
     agents: BTreeMap<AgentId, Agent>,
     revisions: BTreeMap<AgentId, BTreeMap<u64, AgentRevision>>,
     profiles: BTreeMap<CapabilityProfileId, CapabilityProfile>,
@@ -218,6 +239,7 @@ impl Application {
     ) -> Result<Self, ApplicationError> {
         let path = path.into();
         let mut state = read_state(&path)?;
+        lifecycle::migrate_conversations(&mut state)?;
         rebuild_task_senders(&mut state);
         recover_interrupted_tasks(&mut state, recovered_at_ms)?;
         persist_state(&state, &path)?;
@@ -268,7 +290,10 @@ impl Application {
                 tenant
                     .agents
                     .values()
-                    .filter(|agent| agent_owned_by(agent, context))
+                    .filter(|agent| {
+                        agent_owned_by(agent, context)
+                            && !tenant.retired_agents.contains_key(&agent.id)
+                    })
                     .cloned()
                     .collect()
             }))
@@ -298,6 +323,7 @@ impl Application {
         spec.validate()?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
+        lifecycle::require_active_agent(tenant, context, agent_id)?;
         if !tenant
             .agents
             .get(agent_id)
@@ -305,14 +331,7 @@ impl Application {
         {
             return Err(ApplicationError::AgentNotFound);
         }
-        if let Some(profile_id) = &spec.capability_profile_id
-            && !tenant
-                .profiles
-                .get(profile_id)
-                .is_some_and(|profile| profile_visible(profile, context))
-        {
-            return Err(ApplicationError::CapabilityProfileNotFound);
-        }
+        require_visible_profile(tenant, spec.capability_profile_id.as_ref(), context)?;
         let agent = tenant
             .agents
             .get_mut(agent_id)
@@ -369,6 +388,7 @@ impl Application {
         context.require(AGENTS_MANAGE)?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
+        lifecycle::require_active_agent(tenant, context, agent_id)?;
         if !tenant
             .agents
             .get(agent_id)
@@ -383,6 +403,8 @@ impl Application {
         {
             return Err(ApplicationError::RevisionNotFound);
         }
+        let spec = &tenant.revisions[agent_id][&request.revision].spec;
+        require_visible_profile(tenant, spec.capability_profile_id.as_ref(), context)?;
         let agent = tenant
             .agents
             .get_mut(agent_id)
@@ -446,8 +468,12 @@ impl Application {
         request.validate()?;
         {
             let state = self.lock_state()?;
-            let profile = tenant(&state, context)
-                .and_then(|tenant| tenant.profiles.get(profile_id))
+            let tenant =
+                tenant(&state, context).ok_or(ApplicationError::CapabilityProfileNotFound)?;
+            require_visible_profile(tenant, Some(profile_id), context)?;
+            let profile = tenant
+                .profiles
+                .get(profile_id)
                 .ok_or(ApplicationError::CapabilityProfileNotFound)?;
             if !profile_visible(profile, context) {
                 return Err(ApplicationError::CapabilityProfileNotFound);
@@ -462,6 +488,7 @@ impl Application {
         let compiled = compile(catalog, context.authority.tenant_id(), &request.mappings).await?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
+        require_visible_profile(tenant, Some(profile_id), context)?;
         let profile = tenant
             .profiles
             .get_mut(profile_id)
@@ -501,7 +528,10 @@ impl Application {
                 tenant
                     .profiles
                     .values()
-                    .filter(|profile| profile_visible(profile, context))
+                    .filter(|profile| {
+                        profile_visible(profile, context)
+                            && !tenant.retired_profiles.contains_key(&profile.id)
+                    })
                     .cloned()
                     .collect()
             }))
@@ -516,6 +546,7 @@ impl Application {
         Ok(self.admit_task(context, request, attempt_id)?.plan.task)
     }
 
+    #[allow(clippy::too_many_lines)] // Admission and durable membership commit share one state lock.
     pub fn admit_task(
         &self,
         context: &TrustedRequestContext,
@@ -526,6 +557,7 @@ impl Application {
         request.validate()?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
+        lifecycle::require_active_agent(tenant, context, &request.agent_id)?;
         if !tenant
             .agents
             .get(&request.agent_id)
@@ -536,6 +568,7 @@ impl Application {
         if let Some(admission) = existing_task_admission(tenant, context, &request)? {
             return Ok(admission);
         }
+        let conversation = lifecycle::prepare_turn(tenant, context, &request)?;
         let agent = tenant
             .agents
             .get(&request.agent_id)
@@ -583,6 +616,17 @@ impl Application {
             task.id.clone(),
         );
         tenant.tasks.insert(task.id.clone(), task.clone());
+        if let Some((id, _)) = &conversation {
+            let conversation = tenant
+                .conversations
+                .get_mut(id)
+                .ok_or(ApplicationError::ConversationNotFound)?;
+            conversation.task_ids.push(task.id.clone());
+            conversation.revision = conversation
+                .revision
+                .checked_add(1)
+                .ok_or(ApplicationError::StateUnavailable)?;
+        }
         let event = TaskEvent {
             task_id: task.id.clone(),
             attempt_id,
@@ -597,6 +641,11 @@ impl Application {
         let _ = sender.send(event);
         tenant.task_event_senders.insert(task.id.clone(), sender);
         self.persist(&state)?;
+        let mut task = task;
+        if let Some((_, messages)) = conversation {
+            task.input["messages"] =
+                serde_json::to_value(messages).map_err(|_| ApplicationError::StateUnavailable)?;
+        }
         Ok(TaskAdmission {
             plan: TaskExecutionPlan {
                 task,
@@ -1078,6 +1127,7 @@ impl Application {
         request.validate()?;
         let mut state = self.lock_state()?;
         let tenant = tenant_mut(&mut state, context);
+        lifecycle::require_active_agent(tenant, context, &request.agent_id)?;
         let agent = tenant
             .agents
             .get(&request.agent_id)
@@ -1300,10 +1350,11 @@ fn require_visible_profile(
     context: &TrustedRequestContext,
 ) -> Result<(), ApplicationError> {
     if profile_id.is_none_or(|id| {
-        tenant
-            .profiles
-            .get(id)
-            .is_some_and(|profile| profile_visible(profile, context))
+        !tenant.retired_profiles.contains_key(id)
+            && tenant
+                .profiles
+                .get(id)
+                .is_some_and(|profile| profile_visible(profile, context))
     }) {
         Ok(())
     } else {
@@ -1399,7 +1450,7 @@ mod tests {
         context_for(tenant, "human-alice", at)
     }
 
-    fn context_for(tenant: &str, subject: &str, at: u64) -> TrustedRequestContext {
+    pub(super) fn context_for(tenant: &str, subject: &str, at: u64) -> TrustedRequestContext {
         let scopes = [
             AGENTS_MANAGE,
             AGENTS_READ,
@@ -1426,7 +1477,7 @@ mod tests {
         )
     }
 
-    fn revision() -> RevisionSpec {
+    pub(super) fn revision() -> RevisionSpec {
         RevisionSpec {
             instructions: "Help the user.".to_owned(),
             model: "model-one".to_owned(),
@@ -1435,7 +1486,10 @@ mod tests {
         }
     }
 
-    fn active_agent(app: &Application, context: &TrustedRequestContext) -> (Agent, AgentRevision) {
+    pub(super) fn active_agent(
+        app: &Application,
+        context: &TrustedRequestContext,
+    ) -> (Agent, AgentRevision) {
         let agent = app
             .create_agent(
                 context,

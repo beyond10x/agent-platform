@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 pub use agent_platform_core::{
-    ActivateRevision, Agent, AgentId, AgentRevision, CapabilityProfileId, CreateAgent,
-    CreateCapabilityProfile, PendingApproval, ResolveApproval, RevisionSpec, SubmitTask, Task,
-    TaskId, UpdateCapabilityProfile,
+    ActivateRevision, Agent, AgentId, AgentRevision, CapabilityProfileId, Conversation,
+    ConversationId, ConversationRevision, CreateAgent, CreateCapabilityProfile, CreateConversation,
+    PendingApproval, ResolveApproval, RevisionSpec, SubmitTask, Task, TaskId, UpdateAgent,
+    UpdateCapabilityProfile, UpdateConversation,
 };
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde::de::DeserializeOwned;
@@ -19,6 +20,12 @@ pub enum ClientError {
     Transport(#[source] reqwest::Error),
     #[error("agent-platform refused the request with status {0}")]
     Refused(u16),
+    #[error("agent-platform refused the request with status {status}: {code}")]
+    RefusedWithDetail {
+        status: u16,
+        code: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +35,132 @@ pub struct AgentPlatformClient {
 }
 
 impl AgentPlatformClient {
+    pub async fn update_agent(
+        &self,
+        bearer: &str,
+        id: &AgentId,
+        request: &UpdateAgent,
+    ) -> Result<Agent, ClientError> {
+        self.patch_json(bearer, &format!("v1/agents/{id}"), request)
+            .await
+    }
+
+    pub async fn retire_agent(&self, bearer: &str, id: &AgentId) -> Result<(), ClientError> {
+        self.delete(
+            bearer,
+            &format!("v1/agents/{id}"),
+            None::<&ConversationRevision>,
+        )
+        .await
+    }
+
+    pub async fn retire_capability_profile(
+        &self,
+        bearer: &str,
+        id: &CapabilityProfileId,
+    ) -> Result<(), ClientError> {
+        self.delete(
+            bearer,
+            &format!("v1/capability-profiles/{id}"),
+            None::<&ConversationRevision>,
+        )
+        .await
+    }
+
+    pub async fn list_conversations(
+        &self,
+        bearer: &str,
+        agent: &AgentId,
+    ) -> Result<Vec<Conversation>, ClientError> {
+        self.get_json(bearer, &format!("v1/agents/{agent}/conversations"))
+            .await
+    }
+
+    pub async fn create_conversation(
+        &self,
+        bearer: &str,
+        agent: &AgentId,
+        request: &CreateConversation,
+    ) -> Result<Conversation, ClientError> {
+        self.post_json(bearer, &format!("v1/agents/{agent}/conversations"), request)
+            .await
+    }
+
+    pub async fn update_conversation(
+        &self,
+        bearer: &str,
+        agent: &AgentId,
+        id: &ConversationId,
+        request: &UpdateConversation,
+    ) -> Result<Conversation, ClientError> {
+        self.patch_json(
+            bearer,
+            &format!("v1/agents/{agent}/conversations/{id}"),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_conversation(
+        &self,
+        bearer: &str,
+        agent: &AgentId,
+        id: &ConversationId,
+        request: &ConversationRevision,
+    ) -> Result<(), ClientError> {
+        self.delete(
+            bearer,
+            &format!("v1/agents/{agent}/conversations/{id}"),
+            Some(request),
+        )
+        .await
+    }
+
+    pub async fn clear_conversation(
+        &self,
+        bearer: &str,
+        agent: &AgentId,
+        id: &ConversationId,
+        request: &ConversationRevision,
+    ) -> Result<Conversation, ClientError> {
+        self.post_json(
+            bearer,
+            &format!("v1/agents/{agent}/conversations/{id}/clear"),
+            request,
+        )
+        .await
+    }
+
+    pub async fn list_conversation_tasks(
+        &self,
+        bearer: &str,
+        agent: &AgentId,
+        id: &ConversationId,
+    ) -> Result<Vec<Task>, ClientError> {
+        self.get_json(
+            bearer,
+            &format!("v1/agents/{agent}/conversations/{id}/tasks"),
+        )
+        .await
+    }
+
+    async fn delete(
+        &self,
+        bearer: &str,
+        path: &str,
+        body: Option<&impl serde::Serialize>,
+    ) -> Result<(), ClientError> {
+        let mut request = self
+            .http
+            .delete(self.endpoint(path)?)
+            .header(AUTHORIZATION, authorization(bearer)?);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.map_err(ClientError::Transport)?;
+        checked_response(response).await?;
+        Ok(())
+    }
     pub fn new(origin: &str) -> Result<Self, ClientError> {
         let origin = Url::parse(origin).map_err(|_| ClientError::Configuration)?;
         let internal_http = origin.scheme() == "http"
@@ -256,10 +389,44 @@ fn authorization(bearer: &str) -> Result<HeaderValue, ClientError> {
 }
 
 async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, ClientError> {
-    require_success(response)?
+    checked_response(response)
+        .await?
         .json()
         .await
         .map_err(ClientError::Transport)
+}
+
+#[derive(serde::Deserialize)]
+struct Problem {
+    code: String,
+    message: String,
+}
+
+async fn checked_response(
+    mut response: reqwest::Response,
+) -> Result<reqwest::Response, ClientError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status().as_u16();
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if bytes.len().saturating_add(chunk.len()) > 8192 {
+            return Err(ClientError::Refused(status));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if let Ok(problem) = serde_json::from_slice::<Problem>(&bytes)
+        && problem.code.len() <= 128
+        && problem.message.len() <= 2048
+    {
+        return Err(ClientError::RefusedWithDetail {
+            status,
+            code: problem.code,
+            message: problem.message,
+        });
+    }
+    Err(ClientError::Refused(status))
 }
 
 fn require_success(response: reqwest::Response) -> Result<reqwest::Response, ClientError> {

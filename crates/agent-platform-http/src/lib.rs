@@ -1,5 +1,14 @@
 #![forbid(unsafe_code)]
 
+mod lifecycle;
+use agent_platform_api::{
+    CONVERSATION_CLEAR_PATH, CONVERSATION_PATH, CONVERSATION_TASKS_PATH, CONVERSATIONS_PATH,
+};
+use lifecycle::{
+    clear_conversation, create_conversation, delete_conversation, list_conversation_tasks,
+    list_conversations, retire_agent, retire_capability_profile, update_agent, update_conversation,
+};
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -143,14 +152,30 @@ impl ApprovalPort for AttemptApprover {
 pub fn router(state: HttpState) -> Router {
     let protected = Router::new()
         .route(AGENTS_PATH, get(list_agents).post(create_agent))
-        .route(AGENT_PATH, get(get_agent))
+        .route(
+            AGENT_PATH,
+            get(get_agent).patch(update_agent).delete(retire_agent),
+        )
+        .route(
+            CONVERSATIONS_PATH,
+            get(list_conversations).post(create_conversation),
+        )
+        .route(
+            CONVERSATION_PATH,
+            patch(update_conversation).delete(delete_conversation),
+        )
+        .route(CONVERSATION_CLEAR_PATH, post(clear_conversation))
+        .route(CONVERSATION_TASKS_PATH, get(list_conversation_tasks))
         .route(REVISIONS_PATH, get(list_revisions).post(create_revision))
         .route(ACTIVATE_PATH, post(activate_revision))
         .route(
             CAPABILITY_PROFILES_PATH,
             get(list_capability_profiles).post(create_capability_profile),
         )
-        .route(CAPABILITY_PROFILE_PATH, patch(update_capability_profile))
+        .route(
+            CAPABILITY_PROFILE_PATH,
+            patch(update_capability_profile).delete(retire_capability_profile),
+        )
         .route(TASKS_PATH, get(list_tasks).post(submit_task))
         .route(CODING_SESSION_TURNS_PATH, post(submit_coding_session_turn))
         .route(TASK_PATH, get(get_task))
@@ -1014,14 +1039,20 @@ fn application_error(error: &ApplicationError) -> Response {
     let (status, code) = match error {
         ApplicationError::Forbidden { .. } => (StatusCode::FORBIDDEN, "forbidden"),
         ApplicationError::AgentNotFound
+        | ApplicationError::ConversationNotFound
         | ApplicationError::RevisionNotFound
         | ApplicationError::CapabilityProfileNotFound
         | ApplicationError::TaskNotFound
         | ApplicationError::ApprovalNotFound => (StatusCode::NOT_FOUND, "not_found"),
         ApplicationError::ActiveRevisionConflict { .. }
+        | ApplicationError::ConversationRevisionConflict
         | ApplicationError::CapabilityProfileRevisionConflict { .. }
         | ApplicationError::IdempotencyConflict
         | ApplicationError::ApprovalConflict => (StatusCode::CONFLICT, "conflict"),
+        ApplicationError::ActiveWork => (StatusCode::CONFLICT, "active_work"),
+        ApplicationError::CapabilityProfileInUse => {
+            (StatusCode::CONFLICT, "capability_profile_in_use")
+        }
         ApplicationError::NoActiveRevision | ApplicationError::Invalid(_) => {
             (StatusCode::UNPROCESSABLE_ENTITY, "invalid_request")
         }
@@ -1155,6 +1186,7 @@ mod tests {
                 ApiMethod::Get => Method::GET,
                 ApiMethod::Post => Method::POST,
                 ApiMethod::Patch => Method::PATCH,
+                ApiMethod::Delete => Method::DELETE,
             };
             let response = service()
                 .oneshot(request(method, &path, "not json", None))
