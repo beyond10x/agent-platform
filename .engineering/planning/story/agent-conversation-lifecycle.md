@@ -32,7 +32,7 @@ scope:
   path: crates/agent-platform-openapi/src/lib.rs
 - confidence: cited
   path: ess/system
-revision: 9
+revision: 11
 ---
 ## Outcome
 
@@ -65,3 +65,11 @@ The complete Rust workspace gate, ESS validation and strict AEP validation passe
 The live composed conversation check remains incomplete: earlier success was followed by a terminal provider refusal with partial output. The adapter now retains the bounded provider-refusal warning only when the loop also reports a refusal stop. It keeps the stable harness_incomplete failure code. Successful runs and unrelated stop reasons ignore that warning. The regression covers event forwarding, terminal classification and explicit oversized-detail omission.
 
 Harness candidate 0d83f585e8ec77aa01126520854cd591ca5a9bc9 passed its complete gate and publishes a synthetic immutable refusal-detail contract. This composition selects that exact revision for direct and AgentIDE-transitive Harness crates so their neutral types agree. Initial dependency checking caught duplicate wire types before image build; the explicit Cargo patches resolved them. The complete Agent Platform workspace formatting, clippy and test gates then passed. Actual live refusal details remain pending local image composition; no model switch or retry policy was introduced.
+
+## Conversation role correction
+
+The diagnostic deployment preserved a live provider refusal category reasoning_extraction for a benign recall request. That classification does not establish why the provider refused. Inspecting the adapter showed that main-agent history was flattened into a single new user prompt with textual user/assistant labels. Correct the application-to-Harness composition to pass the server-derived history as typed user and assistant items through run_in, with the current prompt separate. Preserve exact history content, reject system-role history, keep approval checkpoints authoritative, and retain all existing owner and context bounds. Validate the request role structure locally and rerun the same real conversation test once; do not change its assertion or retry policy.
+
+## Conversation role source verification
+
+The complete workspace fmt/clippy/test gate passed after correcting main-agent history projection. The regression drives the actual Harness loop with a recording model port and checks exact user/assistant/current-user items, preserved whitespace and quoted role labels, empty history for a fresh conversation and refusal of system-role history. This is source-contract evidence, not a live provider success. The unchanged live acceptance check remains required after the new image is applied.

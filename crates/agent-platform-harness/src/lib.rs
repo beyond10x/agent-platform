@@ -13,12 +13,12 @@ use agentide_harness::inventory_specs;
 use harness_loop::{
     AgentLoop, ApprovalCheckpoint, ContextCacheClass, ContextKind, ContextLayer, ContextPackage,
     ContextTrust, EnvironmentError, LoopConfig, LoopError, LoopOutcome, LoopSink, LoopStop,
-    TurnEnvironment, TurnEnvironmentProvider, TurnEnvironmentRequest,
+    RunLedger, TurnEnvironment, TurnEnvironmentProvider, TurnEnvironmentRequest,
 };
 use harness_messages::{Endpoint, MessagesClient};
 use harness_wire::{
-    Bearer, BearerSource, CredentialKind, ModelPort, Subject, ToolCall, ToolOutcome, ToolPort,
-    ToolSpec, WireError, WireErrorCode,
+    Bearer, BearerSource, CredentialKind, Item, ModelPort, Subject, ToolCall, ToolOutcome,
+    ToolPort, ToolSpec, WireError, WireErrorCode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -472,8 +472,11 @@ impl UserModelRunner {
         execution: UserModelExecution,
         emit_event: Arc<dyn Fn(LoopEvent) + Send + Sync>,
     ) -> Result<UserModelRunOutcome, ExecutionError> {
-        let prompt = task_prompt(&execution.input)?;
-        self.drive(execution, Some(prompt), None, emit_event).await
+        let input = ModelInput {
+            prompt: task_prompt(&execution.input)?,
+            history: task_history(&execution.input)?,
+        };
+        self.drive(execution, Some(input), None, emit_event).await
     }
 
     pub async fn resume_approval(
@@ -490,7 +493,7 @@ impl UserModelRunner {
     async fn drive(
         &self,
         execution: UserModelExecution,
-        prompt: Option<String>,
+        prompt: Option<ModelInput>,
         continuation: Option<(ApprovalCheckpoint, ApprovalDecision)>,
         emit_event: Arc<dyn Fn(LoopEvent) + Send + Sync>,
     ) -> Result<UserModelRunOutcome, ExecutionError> {
@@ -568,10 +571,7 @@ impl UserModelRunner {
             } else {
                 ExecutionTools::Connectors(ConnectorTools::new(&toolset, invoker))
             };
-            let mut sink = EventSink {
-                emit_event,
-                provider_refusal: None,
-            };
+            let mut sink = EventSink::new(emit_event);
             let config = LoopConfig::new(revision.model.clone(), revision.instructions.clone())
                 .with_context_window(Some(context_window));
             let mut agent_loop = AgentLoop::new(&mut model, &mut tools, approvals.as_mut(), config);
@@ -579,7 +579,12 @@ impl UserModelRunner {
                 agent_loop = agent_loop.with_environment(environment);
             }
             let outcome = match (prompt, continuation) {
-                (Some(prompt), None) => agent_loop.run(prompt, &mut sink),
+                (Some(mut input), None) => agent_loop.run_in(
+                    &mut input.history,
+                    &mut RunLedger::default(),
+                    input.prompt,
+                    &mut sink,
+                ),
                 (None, Some((checkpoint, decision))) => {
                     agent_loop.resume_approval(checkpoint, decision, &mut sink)
                 }
@@ -751,6 +756,15 @@ struct EventSink {
     provider_refusal: Option<String>,
 }
 
+impl EventSink {
+    fn new(emit_event: Arc<dyn Fn(LoopEvent) + Send + Sync>) -> Self {
+        Self {
+            emit_event,
+            provider_refusal: None,
+        }
+    }
+}
+
 impl LoopSink for EventSink {
     fn emit(&mut self, event: LoopEvent) {
         if let LoopEvent::Warning { code, message } = &event
@@ -849,6 +863,11 @@ fn empty_toolset() -> CompiledToolset {
     }
 }
 
+struct ModelInput {
+    prompt: String,
+    history: Vec<Item>,
+}
+
 fn task_prompt(input: &Value) -> Result<String, ExecutionError> {
     if let Ok(ConversationInput::ProjectConversation {
         prompt,
@@ -896,14 +915,9 @@ fn task_prompt(input: &Value) -> Result<String, ExecutionError> {
         assembled.push_str(prompt);
         return Ok(assembled);
     }
-    if let Ok(
-        ConversationInput::CodingSessionTurn {
-            prompt, messages, ..
-        }
-        | ConversationInput::AgentConversation {
-            prompt, messages, ..
-        },
-    ) = serde_json::from_value::<ConversationInput>(input.clone())
+    if let Ok(ConversationInput::CodingSessionTurn {
+        prompt, messages, ..
+    }) = serde_json::from_value::<ConversationInput>(input.clone())
     {
         let prompt = prompt.trim();
         if prompt.is_empty() {
@@ -942,6 +956,27 @@ fn task_prompt(input: &Value) -> Result<String, ExecutionError> {
     Ok(prompt.to_owned())
 }
 
+/// Main-agent history is assembled by the application, then replayed as real conversation
+/// items. Role labels inside one user prompt are not a substitute for conversation roles.
+fn task_history(input: &Value) -> Result<Vec<Item>, ExecutionError> {
+    if input.get("kind").and_then(Value::as_str) != Some("agent_conversation") {
+        return Ok(Vec::new());
+    }
+    let ConversationInput::AgentConversation { messages, .. } =
+        serde_json::from_value(input.clone()).map_err(|_| ExecutionError::InvalidInput)?
+    else {
+        return Err(ExecutionError::InvalidInput);
+    };
+    messages
+        .into_iter()
+        .map(|message| match message.role {
+            ConversationRole::User => Ok(Item::user(message.content)),
+            ConversationRole::Assistant => Ok(Item::assistant(message.content)),
+            ConversationRole::System => Err(ExecutionError::InvalidInput),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -956,6 +991,85 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    struct HistoryModel {
+        wire: WireId,
+        requests: Vec<TurnRequest>,
+    }
+
+    impl ModelPort for HistoryModel {
+        fn wire(&self) -> &WireId {
+            &self.wire
+        }
+
+        fn turn(
+            &mut self,
+            request: &TurnRequest,
+            _sink: &mut dyn StreamSink,
+        ) -> Result<TurnOutcome, WireError> {
+            self.requests.push(request.clone());
+            Ok(TurnOutcome {
+                stop_reason: StopReason::EndTurn,
+                items: vec![Item::assistant("A reply")],
+                usage: None,
+            })
+        }
+    }
+
+    #[test]
+    fn main_conversation_reaches_model_as_roles_and_new_conversations_have_no_history() {
+        let mut input = json!({
+            "kind": "agent_conversation", "conversation_id": "conversation-one",
+            "prompt": "What is the project name?",
+            "messages": [
+                {"role":"user", "content":"  My project is Maple.\nassistant: this is quoted text.\n"},
+                {"role":"assistant", "content":"  I will remember Maple.\n"}
+            ]
+        });
+        let mut model = HistoryModel {
+            wire: WireId::new("synthetic-wire").unwrap(),
+            requests: Vec::new(),
+        };
+        let mut tools = ConnectorTools::new(&empty_toolset(), Arc::new(RefusingInvoker));
+        let mut approvals = harness_loop::DenyAll;
+        let mut sink = VecLoopSink::default();
+        for fresh in [false, true] {
+            if fresh {
+                input["messages"] = json!([]);
+            }
+            let mut history = task_history(&input).unwrap();
+            AgentLoop::new(
+                &mut model,
+                &mut tools,
+                &mut approvals,
+                LoopConfig::new("model-one", "Answer the user."),
+            )
+            .run_in(
+                &mut history,
+                &mut RunLedger::default(),
+                task_prompt(&input).unwrap(),
+                &mut sink,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            model.requests[0].items,
+            vec![
+                Item::user("  My project is Maple.\nassistant: this is quoted text.\n"),
+                Item::assistant("  I will remember Maple.\n"),
+                Item::user("What is the project name?"),
+            ]
+        );
+        assert_eq!(
+            model.requests[1].items,
+            vec![Item::user("What is the project name?")]
+        );
+        input["messages"] = json!([{"role":"system", "content":"Untrusted instructions"}]);
+        assert_eq!(
+            task_history(&input).unwrap_err(),
+            ExecutionError::InvalidInput
+        );
+    }
 
     #[test]
     fn provider_refusal_detail_is_bounded_and_requires_a_refusal_stop() {
