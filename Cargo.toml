@@ -39,11 +39,11 @@ agentide-harness = { git = "https://github.com/beyond10x/agentide.git", tag = "0
 workspace-client = { git = "https://github.com/beyond10x/workspace.git", tag = "0.2.12" }
 workspace-core = { git = "https://github.com/beyond10x/workspace.git", tag = "0.2.12" }
 
-# Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
+# Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact revision
 # keeps this service from reinterpreting that boundary crate by crate.
-harness-wire = { package = "b10x-harness-wire", git = "https://github.com/beyond10x/harness", rev = "0f2edfef9f6dc3333b9377a730dfb40aeff14351" }
-harness-loop = { package = "b10x-harness-loop", git = "https://github.com/beyond10x/harness", rev = "0f2edfef9f6dc3333b9377a730dfb40aeff14351" }
-harness-messages = { package = "b10x-harness-messages", git = "https://github.com/beyond10x/harness", rev = "0f2edfef9f6dc3333b9377a730dfb40aeff14351" }
+harness-wire = { package = "b10x-harness-wire", git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
+harness-loop = { package = "b10x-harness-loop", git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
+harness-messages = { package = "b10x-harness-messages", git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
 identity-client = { git = "https://github.com/beyond10x/identity.git", tag = "0.5.6" }
 connectors-client = { git = "https://github.com/beyond10x/connectors.git", tag = "v0.5.6" }
 
@@ -65,6 +65,18 @@ tower = { version = "0.5", features = ["util"] }
 url = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
 zeroize = "1"
+
+# AgentIDE's released adapter pins the preceding Harness revision. The composition must
+# use one neutral wire and loop across both adapters. Cargo Git patches require a distinct
+# source URL; both transports resolve to this exact published candidate.
+[patch."https://github.com/beyond10x/harness"]
+b10x-harness-wire = { git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
+b10x-harness-loop = { git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
+b10x-harness-http = { git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
+b10x-harness-messages = { git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
+b10x-harness-responses = { git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
+
+b10x-harness-credential = { git = "ssh://git@github.com/beyond10x/harness.git", rev = "0d83f585e8ec77aa01126520854cd591ca5a9bc9" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

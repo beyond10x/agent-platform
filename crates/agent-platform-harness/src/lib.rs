@@ -568,7 +568,10 @@ impl UserModelRunner {
             } else {
                 ExecutionTools::Connectors(ConnectorTools::new(&toolset, invoker))
             };
-            let mut sink = EventSink { emit_event };
+            let mut sink = EventSink {
+                emit_event,
+                provider_refusal: None,
+            };
             let config = LoopConfig::new(revision.model.clone(), revision.instructions.clone())
                 .with_context_window(Some(context_window));
             let mut agent_loop = AgentLoop::new(&mut model, &mut tools, approvals.as_mut(), config);
@@ -583,14 +586,17 @@ impl UserModelRunner {
                 _ => return Err(ExecutionError::HarnessConfiguration),
             }
             .map_err(|error| execution_loop_error(&error))?;
-            execution_outcome(outcome)
+            execution_outcome(outcome, sink.provider_refusal)
         })
         .await
         .map_err(|_| ExecutionError::WorkerUnavailable)?
     }
 }
 
-fn execution_outcome(outcome: LoopOutcome) -> Result<UserModelRunOutcome, ExecutionError> {
+fn execution_outcome(
+    outcome: LoopOutcome,
+    provider_refusal: Option<String>,
+) -> Result<UserModelRunOutcome, ExecutionError> {
     match outcome.stop {
         LoopStop::Completed => Ok(UserModelRunOutcome::Completed {
             output: outcome.text,
@@ -601,9 +607,17 @@ fn execution_outcome(outcome: LoopOutcome) -> Result<UserModelRunOutcome, Execut
                 checkpoint: Box::new(checkpoint),
             })
             .ok_or(ExecutionError::HarnessConfiguration),
-        stop => Err(ExecutionError::Incomplete {
-            reason: incomplete_reason(&stop),
-        }),
+        stop => {
+            let detail = if matches!(&stop, LoopStop::ProviderIncomplete { reason } if reason == "refusal")
+            {
+                provider_refusal
+            } else {
+                None
+            };
+            Err(ExecutionError::Incomplete {
+                reason: detail.unwrap_or_else(|| incomplete_reason(&stop).to_owned()),
+            })
+        }
     }
 }
 
@@ -628,7 +642,7 @@ fn incomplete_reason(stop: &LoopStop) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecutionError {
     #[error("task input must be a string or an object containing a non-empty `prompt` string")]
     InvalidInput,
@@ -653,7 +667,7 @@ pub enum ExecutionError {
     #[error("the Harness run configuration is invalid")]
     HarnessConfiguration,
     #[error("the Harness run stopped before completing: {reason}")]
-    Incomplete { reason: &'static str },
+    Incomplete { reason: String },
     #[error("the current Workspace coding session or actor view is unavailable")]
     WorkspaceUnavailable,
     #[error("the execution worker is unavailable")]
@@ -734,10 +748,21 @@ impl BearerSource for LeaseBearerSource {
 
 struct EventSink {
     emit_event: Arc<dyn Fn(LoopEvent) + Send + Sync>,
+    provider_refusal: Option<String>,
 }
 
 impl LoopSink for EventSink {
     fn emit(&mut self, event: LoopEvent) {
+        if let LoopEvent::Warning { code, message } = &event
+            && code == "provider-refusal"
+        {
+            self.provider_refusal = Some(if message.len() <= 2400 {
+                message.clone()
+            } else {
+                "Provider declined the response; its explanation exceeded the diagnostic bound."
+                    .to_owned()
+            });
+        }
         (self.emit_event)(event);
     }
 }
@@ -931,6 +956,66 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn provider_refusal_detail_is_bounded_and_requires_a_refusal_stop() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let events = recorded.clone();
+        let mut sink = EventSink {
+            emit_event: Arc::new(move |event| events.lock().unwrap().push(event)),
+            provider_refusal: None,
+        };
+        sink.emit(LoopEvent::Warning {
+            code: "unrelated".into(),
+            message: "An unrelated warning".into(),
+        });
+        assert!(sink.provider_refusal.is_none());
+        sink.emit(LoopEvent::Warning {
+            code: "provider-refusal".into(),
+            message: "Provider declined the response. Category: not supplied.".into(),
+        });
+        let outcome = |stop| LoopOutcome {
+            stop,
+            text: "Partial output".into(),
+            items: Vec::new(),
+            turns: 1,
+            usage: Vec::new(),
+            cost_micro_usd: None,
+            structured: None,
+            checkpoint: None,
+        };
+        assert!(
+            execution_outcome(outcome(LoopStop::Completed), sink.provider_refusal.clone()).is_ok()
+        );
+        let error = execution_outcome(
+            outcome(LoopStop::ProviderIncomplete {
+                reason: "refusal".into(),
+            }),
+            sink.provider_refusal.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "harness_incomplete");
+        assert!(error.to_string().contains("Category: not supplied."));
+        let error = execution_outcome(
+            outcome(LoopStop::ProviderIncomplete {
+                reason: "pause_turn".into(),
+            }),
+            sink.provider_refusal.clone(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("provider paused"));
+        assert!(!error.to_string().contains("Category:"));
+        sink.emit(LoopEvent::Warning {
+            code: "provider-refusal".into(),
+            message: "x".repeat(2401),
+        });
+        assert!(
+            sink.provider_refusal
+                .unwrap()
+                .contains("exceeded the diagnostic bound")
+        );
+        assert_eq!(recorded.lock().unwrap().len(), 3);
+    }
 
     #[test]
     fn project_conversation_is_bound_to_the_exact_snapshot() {

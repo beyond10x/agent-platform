@@ -563,7 +563,7 @@ dependencies = [
 [[package]]
 name = "b10x-harness-credential"
 version = "0.11.1"
-source = "git+https://github.com/beyond10x/harness?rev=0f2edfef9f6dc3333b9377a730dfb40aeff14351#0f2edfef9f6dc3333b9377a730dfb40aeff14351"
+source = "git+ssh://git@github.com/beyond10x/harness.git?rev=0d83f585e8ec77aa01126520854cd591ca5a9bc9#0d83f585e8ec77aa01126520854cd591ca5a9bc9"
 dependencies = [
  "b10x-harness-http",
  "b10x-harness-wire",
@@ -574,7 +574,7 @@ dependencies = [
 [[package]]
 name = "b10x-harness-http"
 version = "0.11.1"
-source = "git+https://github.com/beyond10x/harness?rev=0f2edfef9f6dc3333b9377a730dfb40aeff14351#0f2edfef9f6dc3333b9377a730dfb40aeff14351"
+source = "git+ssh://git@github.com/beyond10x/harness.git?rev=0d83f585e8ec77aa01126520854cd591ca5a9bc9#0d83f585e8ec77aa01126520854cd591ca5a9bc9"
 dependencies = [
  "b10x-harness-wire",
  "reqwest 0.12.28",
@@ -585,7 +585,7 @@ dependencies = [
 [[package]]
 name = "b10x-harness-loop"
 version = "0.11.1"
-source = "git+https://github.com/beyond10x/harness?rev=0f2edfef9f6dc3333b9377a730dfb40aeff14351#0f2edfef9f6dc3333b9377a730dfb40aeff14351"
+source = "git+ssh://git@github.com/beyond10x/harness.git?rev=0d83f585e8ec77aa01126520854cd591ca5a9bc9#0d83f585e8ec77aa01126520854cd591ca5a9bc9"
 dependencies = [
  "b10x-harness-wire",
  "jsonschema",
@@ -598,7 +598,7 @@ dependencies = [
 [[package]]
 name = "b10x-harness-messages"
 version = "0.11.1"
-source = "git+https://github.com/beyond10x/harness?rev=0f2edfef9f6dc3333b9377a730dfb40aeff14351#0f2edfef9f6dc3333b9377a730dfb40aeff14351"
+source = "git+ssh://git@github.com/beyond10x/harness.git?rev=0d83f585e8ec77aa01126520854cd591ca5a9bc9#0d83f585e8ec77aa01126520854cd591ca5a9bc9"
 dependencies = [
  "b10x-harness-http",
  "b10x-harness-wire",
@@ -609,7 +609,7 @@ dependencies = [
 [[package]]
 name = "b10x-harness-responses"
 version = "0.11.1"
-source = "git+https://github.com/beyond10x/harness?rev=0f2edfef9f6dc3333b9377a730dfb40aeff14351#0f2edfef9f6dc3333b9377a730dfb40aeff14351"
+source = "git+ssh://git@github.com/beyond10x/harness.git?rev=0d83f585e8ec77aa01126520854cd591ca5a9bc9#0d83f585e8ec77aa01126520854cd591ca5a9bc9"
 dependencies = [
  "b10x-harness-http",
  "b10x-harness-wire",
@@ -620,7 +620,7 @@ dependencies = [
 [[package]]
 name = "b10x-harness-wire"
 version = "0.11.1"
-source = "git+https://github.com/beyond10x/harness?rev=0f2edfef9f6dc3333b9377a730dfb40aeff14351#0f2edfef9f6dc3333b9377a730dfb40aeff14351"
+source = "git+ssh://git@github.com/beyond10x/harness.git?rev=0d83f585e8ec77aa01126520854cd591ca5a9bc9#0d83f585e8ec77aa01126520854cd591ca5a9bc9"
 dependencies = [
  "httpdate",
  "serde",

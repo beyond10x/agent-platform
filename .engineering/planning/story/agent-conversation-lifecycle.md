@@ -11,6 +11,10 @@ relations:
 - serves: vision:O5
 scope:
 - confidence: cited
+  path: Cargo.lock
+- confidence: cited
+  path: Cargo.toml
+- confidence: cited
   path: crates/agent-platform-api/src/lib.rs
 - confidence: cited
   path: crates/agent-platform-app
@@ -28,7 +32,7 @@ scope:
   path: crates/agent-platform-openapi/src/lib.rs
 - confidence: cited
   path: ess/system
-revision: 7
+revision: 9
 ---
 ## Outcome
 
@@ -55,3 +59,9 @@ Core lifecycle requests and conversation data, application persistence and admis
 ## Validation so far
 
 The complete Rust workspace gate, ESS validation and strict AEP validation passed for the lifecycle implementation. Official client path-segment tests and clippy passed. The composed local deployment now passes actual browser repeated agent creation, revision editing, agent retirement, capability profile creation/bulk updates, assigned-profile refusal and profile retirement through reloads. The first real Claude turn succeeded, while a subsequent context-recall turn failed with a generic harness_incomplete result. Local conversation acceptance remains incomplete. Preserve distinct bounded Harness stop explanations and show partial output together with its failure before investigating the actual stop; do not reinterpret an incomplete attempt as success.
+
+## Provider diagnostics verification
+
+The live composed conversation check remains incomplete: earlier success was followed by a terminal provider refusal with partial output. The adapter now retains the bounded provider-refusal warning only when the loop also reports a refusal stop. It keeps the stable harness_incomplete failure code. Successful runs and unrelated stop reasons ignore that warning. The regression covers event forwarding, terminal classification and explicit oversized-detail omission.
+
+Harness candidate 0d83f585e8ec77aa01126520854cd591ca5a9bc9 passed its complete gate and publishes a synthetic immutable refusal-detail contract. This composition selects that exact revision for direct and AgentIDE-transitive Harness crates so their neutral types agree. Initial dependency checking caught duplicate wire types before image build; the explicit Cargo patches resolved them. The complete Agent Platform workspace formatting, clippy and test gates then passed. Actual live refusal details remain pending local image composition; no model switch or retry policy was introduced.
