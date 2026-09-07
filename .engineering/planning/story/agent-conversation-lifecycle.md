@@ -32,7 +32,7 @@ scope:
   path: crates/agent-platform-openapi/src/lib.rs
 - confidence: cited
   path: ess/system
-revision: 11
+revision: 12
 ---
 ## Outcome
 
@@ -73,3 +73,7 @@ The diagnostic deployment preserved a live provider refusal category reasoning_e
 ## Conversation role source verification
 
 The complete workspace fmt/clippy/test gate passed after correcting main-agent history projection. The regression drives the actual Harness loop with a recording model port and checks exact user/assistant/current-user items, preserved whitespace and quoted role labels, empty history for a fresh conversation and refusal of system-role history. This is source-contract evidence, not a live provider success. The unchanged live acceptance check remains required after the new image is applied.
+
+## Latest live result
+
+The corrected typed-history candidate was built and applied locally. The unchanged real-provider conversation acceptance ran once and failed on recall with provider category reasoning_extraction, matching the previous diagnostic classification. Proper role projection is verified in source but did not resolve this provider refusal. The failure remains visible beside partial output, and no prompt/assertion/retry-policy change was made to obtain a pass. Broader conversation reliability remains incomplete.
