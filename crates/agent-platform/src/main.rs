@@ -60,6 +60,9 @@ struct ServeOptions {
     /// Identity-authenticated Workspace service origin used for hosted coding-session turns.
     #[arg(long, env = "AGENT_PLATFORM_WORKSPACE_ORIGIN")]
     workspace_origin: Option<String>,
+    /// Ed25519 signing key used only by the Workspace execution authorization adapter.
+    #[arg(long, env = "AGENT_PLATFORM_WORKSPACE_SIGNING_KEY_FILE")]
+    workspace_signing_key_file: Option<PathBuf>,
     /// Messages-compatible provider API prefix used by Harness.
     #[arg(long, default_value = "https://api.anthropic.com/v1")]
     model_endpoint_base: String,
@@ -135,7 +138,12 @@ async fn serve(options: &ServeOptions) -> Result<(), Box<dyn Error>> {
             verifier
         };
         let verifier = if let Some(workspace_origin) = workspace_origin {
-            verifier.with_workspace(workspace_origin)?
+            let path = options
+                .workspace_signing_key_file
+                .as_ref()
+                .ok_or("Workspace requires an executor signing key")?;
+            let key = zeroize::Zeroizing::new(std::fs::read(path)?);
+            verifier.with_workspace(workspace_origin, &key)?
         } else {
             verifier
         };

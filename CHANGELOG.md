@@ -4,6 +4,10 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+- Register coding attempts with Workspace through authenticated downward requests, checking current
+  local task authority before each call. Retire every adapter clone on suspension and confirm
+  closure, or drain issued proofs, before reporting a terminal attempt.
+
 ## [0.6.8] — 2026-09-04
 
 - Make agents private to their creating Identity principal, including agent discovery, direct

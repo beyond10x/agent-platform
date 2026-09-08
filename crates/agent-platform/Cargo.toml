@@ -10,6 +10,7 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+zeroize.workspace = true
 agent-platform-app.workspace = true
 agent-platform-auth.workspace = true
 agent-platform-connectors.workspace = true

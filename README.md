@@ -51,6 +51,23 @@ The same process serves the public, binary-embedded documentation at
 `http://127.0.0.1:8090/docs/` and its generated OpenAPI 3.1 contract at
 `http://127.0.0.1:8090/openapi.json`. Neither route exposes tenant data or private planning records.
 
+## Workspace execution authority
+
+When `AGENT_PLATFORM_WORKSPACE_ORIGIN` is configured, also configure
+`AGENT_PLATFORM_WORKSPACE_SIGNING_KEY_FILE` with the execution host's Ed25519 private key. Workspace
+receives only its corresponding public key. The authentication adapter registers the exact coding
+attempt downward and rechecks the local task before signing each Workspace request; the model and
+Harness tool arguments never receive the signing key or user's session credential.
+
+Every request is bound to its current Identity session, method, path and body. Workspace retains
+current session/grant checks and consumes the proof once. Approval suspension disables the old
+adapter clones; resumption binds a new adapter under fresh authority to the same immutable attempt.
+Completion confirms Workspace closure before recording the task terminal. When the acknowledgement
+is unavailable, issuance stops and the executor waits eleven seconds to drain previously issued
+proofs, then reports `workspace_authority_close_unconfirmed`. Previously admitted operations keep
+their own execution and idempotency semantics. A process crash cannot issue further proofs; any
+proof already in transit expires within ten seconds.
+
 ## HTTP surface
 
 All `/v1` routes require the bearer token. Request authority is derived before the JSON body is

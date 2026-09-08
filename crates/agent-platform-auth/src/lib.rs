@@ -4,14 +4,16 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use agent_platform_core::{AttemptId, DelegationId, SubjectId, TenantId, ValidationError};
+use agent_platform_core::{AttemptId, DelegationId, SubjectId, Task, TenantId, ValidationError};
 pub use connectors_client::operation;
 use connectors_client::{HostedClient, RedeemedSubscription, SubscriptionLease};
 use identity_client::{AccessCredential, IdentityClient};
 use sha2::{Digest, Sha256};
 use workspace_client::WorkspaceClient;
+use workspace_client::attestation::{HostRole, RequestSigner};
 use workspace_core::{CodingActorViewRequest, CodingIntentInvocation, CodingIntentResult};
 use zeroize::Zeroizing;
 
@@ -26,6 +28,8 @@ pub const TRIGGERS_MANAGE: &str = "triggers.manage";
 pub const CONNECTORS_AUDIENCE: &str = "urn:b10x:connectors";
 pub const CONNECTORS_LEASE_SCOPE: &str = "connectors.credentials.lease";
 pub const CONNECTORS_INVOKE_SCOPE: &str = "connectors.invoke";
+/// Drain bound for proofs already issued when downward closure cannot be confirmed.
+pub const WORKSPACE_PROOF_DRAIN_SECONDS: u64 = workspace_client::attestation::PROOF_TTL_SECONDS + 1;
 const MODEL_LEASE_TTL: Duration = Duration::from_mins(30);
 const MODEL_LEASE_USES: u16 = 128;
 
@@ -146,6 +150,10 @@ pub struct AttemptWorkspaceAccess {
     workspace: WorkspaceClient,
     authorization: Zeroizing<String>,
     attempt_id: AttemptId,
+    authority: VerifiedAuthority,
+    execution: Option<workspace_core::ExecutionAttempt>,
+    current: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    issuing: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for AttemptWorkspaceAccess {
@@ -155,11 +163,133 @@ impl std::fmt::Debug for AttemptWorkspaceAccess {
             .field("workspace", &"configured")
             .field("authorization", &"[REDACTED]")
             .field("attempt_id", &self.attempt_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl AttemptWorkspaceAccess {
+    /// The verified owner used by the application to recheck its current local task.
+    pub fn authority(&self) -> &VerifiedAuthority {
+        &self.authority
+    }
+
+    /// Bind the authenticated request to its admitted task and a current local state check.
+    pub fn bind_execution(
+        &self,
+        task: &Task,
+        current: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<Self, AuthenticationError> {
+        self.require_attempt(&task.attempt_id)?;
+        if task.tenant_id != *self.authority.tenant_id()
+            || task.actor != *self.authority.authority()
+            || task.input.get("kind").and_then(|value| value.as_str())
+                != Some("coding_session_turn")
+            || !current()
+        {
+            return Err(AuthenticationError::new(
+                "Workspace task authority is not current",
+            ));
+        }
+        let coordinate = |name: &str| {
+            task.input
+                .get(name)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    AuthenticationError::new("Workspace task session binding is invalid")
+                })
+        };
+        let execution = workspace_core::ExecutionAttempt {
+            task_id: task.id.to_string(),
+            attempt_id: task.attempt_id.to_string(),
+            agent_id: task.agent_id.to_string(),
+            delegation_id: task.delegation_id.as_ref().map(ToString::to_string),
+            workspace_session_id: coordinate("workspace_session_id")?,
+            agentide_session_id: coordinate("agentide_session_id")?,
+            input: task.input.clone(),
+        };
+        Ok(Self {
+            execution: Some(execution),
+            current: Some(current),
+            issuing: Arc::new(AtomicBool::new(true)),
+            ..self.clone()
+        })
+    }
+
+    /// Open the immutable downward attempt before the first actor view.
+    pub async fn open(&self) -> Result<(), AuthenticationError> {
+        let execution = self.current_execution()?;
+        let result = self
+            .workspace
+            .open_execution_attempt(&self.authorization, execution)
+            .await
+            .map_err(|_| AuthenticationError::new("Workspace attempt registration was refused"))?;
+        if !result.active || result.attempt_id != execution.attempt_id {
+            return Err(AuthenticationError::new(
+                "Workspace attempt registration is not active",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Disable all clones immediately, including a suspended Harness port.
+    pub fn stop_issuing(&self) {
+        self.issuing.store(false, Ordering::SeqCst);
+    }
+
+    /// Permanently close Workspace admissions. Call after the runner has stopped issuing requests.
+    pub async fn close(&self) -> Result<(), AuthenticationError> {
+        self.stop_issuing();
+        let execution = self
+            .execution
+            .as_ref()
+            .ok_or_else(|| AuthenticationError::new("Workspace attempt is unbound"))?;
+        let result = self
+            .workspace
+            .close_execution_attempt(&self.authorization, execution)
+            .await
+            .map_err(|_| AuthenticationError::new("Workspace attempt closure was not confirmed"))?;
+        if result.active || result.attempt_id != execution.attempt_id {
+            return Err(AuthenticationError::new(
+                "Workspace attempt closure was not confirmed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn current_execution(&self) -> Result<&workspace_core::ExecutionAttempt, AuthenticationError> {
+        if !self.issuing.load(Ordering::SeqCst)
+            || !self.current.as_ref().is_some_and(|check| check())
+        {
+            return Err(AuthenticationError::new(
+                "Workspace task authority is no longer active",
+            ));
+        }
+        self.execution
+            .as_ref()
+            .ok_or_else(|| AuthenticationError::new("Workspace attempt is unbound"))
+    }
+
+    fn require_coordinates(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        attempt_id: &str,
+        agentide_session_id: &str,
+    ) -> Result<(), AuthenticationError> {
+        let execution = self.current_execution()?;
+        if execution.workspace_session_id != session_id
+            || execution.task_id != task_id
+            || execution.attempt_id != attempt_id
+            || execution.agentide_session_id != agentide_session_id
+        {
+            return Err(AuthenticationError::new(
+                "Workspace request belongs to another task or session",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn attempt_id(&self) -> &AttemptId {
         &self.attempt_id
     }
@@ -171,11 +301,25 @@ impl AttemptWorkspaceAccess {
         request: &CodingActorViewRequest,
     ) -> Result<agentide_contracts::ActorView, AuthenticationError> {
         self.require_attempt(attempt_id)?;
-        self.workspace
+        self.require_coordinates(
+            session_id,
+            &request.task_id,
+            &request.attempt_id,
+            &request.agentide_session_id,
+        )?;
+        let view = self
+            .workspace
             .coding_actor_view(&self.authorization, session_id, request)
             .await
             .map_err(|_| {
                 AuthenticationError::new("the current Workspace actor view is unavailable")
+            })?;
+        // Released service contracts cross as JSON. An upstream source revision is not the
+        // embedding crate's Rust type identity; a mismatched wire contract still fails closed.
+        serde_json::to_value(view)
+            .and_then(serde_json::from_value)
+            .map_err(|_| {
+                AuthenticationError::new("the Workspace actor view contract is incompatible")
             })
     }
 
@@ -186,6 +330,12 @@ impl AttemptWorkspaceAccess {
         request: &CodingIntentInvocation,
     ) -> Result<CodingIntentResult, AuthenticationError> {
         self.require_attempt(attempt_id)?;
+        self.require_coordinates(
+            session_id,
+            &request.task_id,
+            &request.attempt_id,
+            &request.agentide_session_id,
+        )?;
         self.workspace
             .invoke_coding_intent(&self.authorization, session_id, request)
             .await
@@ -360,11 +510,18 @@ impl IdentityVerifier {
         Ok(self)
     }
 
-    pub fn with_workspace(mut self, workspace_origin: &str) -> Result<Self, AuthenticationError> {
-        self.workspace =
-            Some(WorkspaceClient::new(workspace_origin).map_err(|_| {
-                AuthenticationError::new("Workspace client configuration is invalid")
-            })?);
+    pub fn with_workspace(
+        mut self,
+        workspace_origin: &str,
+        signing_key: &[u8],
+    ) -> Result<Self, AuthenticationError> {
+        let signer = RequestSigner::from_pem(HostRole::Executor, signing_key)
+            .map_err(|_| AuthenticationError::new("Workspace executor signing key is invalid"))?;
+        self.workspace = Some(
+            WorkspaceClient::new(workspace_origin)
+                .map_err(|_| AuthenticationError::new("Workspace client configuration is invalid"))?
+                .with_request_signer(signer),
+        );
         Ok(self)
     }
 }
@@ -460,6 +617,10 @@ impl CredentialVerifier for IdentityVerifier {
                             workspace: workspace.clone(),
                             authorization: Zeroizing::new(authorization.to_owned()),
                             attempt_id: attempt_id.clone(),
+                            authority: authority.clone(),
+                            execution: None,
+                            current: None,
+                            issuing: Arc::new(AtomicBool::new(false)),
                         })
                     });
             Ok(AuthenticatedRequest {
@@ -602,6 +763,17 @@ mod tests {
             workspace: WorkspaceClient::new("http://127.0.0.1:8080/").unwrap(),
             authorization: Zeroizing::new("Bearer synthetic-session".to_owned()),
             attempt_id: AttemptId::new("attempt-one").unwrap(),
+            authority: VerifiedAuthority::new(
+                TenantId::new("tenant-one").unwrap(),
+                SubjectId::new("human-alice").unwrap(),
+                None,
+                None,
+                [TASKS_READ.to_owned()],
+            )
+            .unwrap(),
+            execution: None,
+            current: None,
+            issuing: Arc::new(AtomicBool::new(false)),
         };
         assert!(
             access
@@ -614,6 +786,57 @@ mod tests {
                 .is_err()
         );
         assert!(!format!("{access:?}").contains("synthetic-session"));
+        let task: Task = serde_json::from_value(json!({
+            "id":"task-one", "tenant_id":"tenant-one", "actor":"human-alice",
+            "agent_id":"agent-one", "agent_revision":1, "capability_profile_id":null,
+            "idempotency_key":"request-one", "input":{"kind":"coding_session_turn",
+                "workspace_session_id":"workspace-one", "agentide_session_id":"editor-one"},
+            "status":"running", "attempt_id":"attempt-one", "output":null,
+            "executor":null, "delegation_id":null, "request_id":"request-one",
+            "accepted_at_ms":1, "completed_at_ms":null
+        }))
+        .unwrap();
+        let current = Arc::new(AtomicBool::new(true));
+        let check = current.clone();
+        let bound = access
+            .bind_execution(&task, Arc::new(move || check.load(Ordering::SeqCst)))
+            .unwrap();
+        assert!(
+            bound
+                .require_coordinates("workspace-one", "task-one", "attempt-one", "editor-one")
+                .is_ok()
+        );
+        for coordinates in [
+            ("another-workspace", "task-one", "attempt-one", "editor-one"),
+            ("workspace-one", "another-task", "attempt-one", "editor-one"),
+            ("workspace-one", "task-one", "another-attempt", "editor-one"),
+            ("workspace-one", "task-one", "attempt-one", "another-editor"),
+        ] {
+            assert!(
+                bound
+                    .require_coordinates(coordinates.0, coordinates.1, coordinates.2, coordinates.3)
+                    .is_err(),
+                "the authentication adapter must refuse changed tool coordinates before sending a proof"
+            );
+        }
+        current.store(false, Ordering::SeqCst);
+        assert!(
+            bound.current_execution().is_err(),
+            "local task revocation must stop new requests"
+        );
+        current.store(true, Ordering::SeqCst);
+        let escaped = bound.clone();
+        bound.stop_issuing();
+        assert!(
+            escaped.current_execution().is_err(),
+            "suspension or retirement disables every existing clone"
+        );
+        let mut changed = task;
+        changed.actor = SubjectId::new("another-person").unwrap();
+        assert!(
+            access.bind_execution(&changed, Arc::new(|| true)).is_err(),
+            "even a running task must belong to the authenticated principal"
+        );
     }
 
     async fn identity_authority(headers: HeaderMap) -> Response {

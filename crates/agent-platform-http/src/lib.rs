@@ -679,6 +679,71 @@ async fn stream_task_events(
         .into_response()
 }
 
+async fn bind_workspace_execution(
+    app: &Application,
+    plan: &TaskExecutionPlan,
+    access: Option<Arc<AttemptWorkspaceAccess>>,
+) -> Result<Option<Arc<AttemptWorkspaceAccess>>, ()> {
+    if plan
+        .task
+        .input
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        != Some("coding_session_turn")
+    {
+        return Ok(None);
+    }
+    let access = access.ok_or(())?;
+    let application = app.clone();
+    let expected = plan.task.clone();
+    let context = TrustedRequestContext::new(
+        access.authority().clone(),
+        expected.request_id.clone(),
+        now_ms(),
+    );
+    let current = Arc::new(move || {
+        application
+            .get_task(&context, &expected.id)
+            .is_ok_and(|task| {
+                matches!(
+                    task.status,
+                    agent_platform_core::TaskStatus::Running
+                        | agent_platform_core::TaskStatus::AwaitingApproval
+                ) && task.attempt_id == expected.attempt_id
+                    && task.tenant_id == expected.tenant_id
+                    && task.actor == expected.actor
+                    && task.agent_id == expected.agent_id
+                    && task.agent_revision == expected.agent_revision
+                    && task.delegation_id == expected.delegation_id
+                    && task.input == expected.input
+            })
+    });
+    let bound = access.bind_execution(&plan.task, current).map_err(|_| ())?;
+    if bound.open().await.is_err() {
+        // A transport error can mean the registration committed but its reply was lost.
+        retire_workspace_execution(Some(&bound)).await;
+        return Err(());
+    }
+    Ok(Some(Arc::new(bound)))
+}
+
+async fn retire_workspace_execution(access: Option<&AttemptWorkspaceAccess>) -> bool {
+    let Some(access) = access else {
+        return true;
+    };
+    access.stop_issuing();
+    if access.close().await.is_ok() {
+        return true;
+    }
+    // The runner has returned and all clones are disabled. Wait out the longest possible proof
+    // before making a terminal task claim when Workspace's closure acknowledgement was lost.
+    tokio::time::sleep(std::time::Duration::from_secs(
+        agent_platform_auth::WORKSPACE_PROOF_DRAIN_SECONDS,
+    ))
+    .await;
+    false
+}
+
 fn spawn_execution(
     app: Application,
     runner: UserModelRunner,
@@ -697,6 +762,16 @@ fn spawn_execution(
         {
             return;
         }
+        let Ok(workspace_access) = bind_workspace_execution(&app, &plan, workspace_access).await
+        else {
+            fail_execution(
+                &app,
+                &plan,
+                "workspace_authority_unavailable",
+                "the coding attempt could not obtain current Workspace authority",
+            );
+            return;
+        };
         let emit = task_event_sink(&app, &tenant_id, &task_id, &attempt_id);
         let approval_evidence = ConnectorApprovalEvidence::default();
         let approval_context = ConnectorOwnerContext {
@@ -723,7 +798,7 @@ fn spawn_execution(
                     input: plan.task.input.clone(),
                     lease,
                     connector_access,
-                    workspace_access,
+                    workspace_access: workspace_access.clone(),
                     attempt_id: attempt_id.clone(),
                     connector_context: connector_operation_context(&approval_context),
                     approval_evidence,
@@ -732,7 +807,7 @@ fn spawn_execution(
                 emit,
             )
             .await;
-        settle_execution(&app, &plan, &deferred, result);
+        settle_execution(&app, &plan, &deferred, result, workspace_access.as_deref()).await;
     });
 }
 
@@ -754,7 +829,18 @@ fn spawn_approval_resume(
         let tenant_id = plan.task.tenant_id.clone();
         let task_id = plan.task.id.clone();
         let attempt_id = plan.task.attempt_id.clone();
+        let Ok(workspace_access) = bind_workspace_execution(&app, &plan, workspace_access).await
+        else {
+            fail_execution(
+                &app,
+                &plan,
+                "workspace_authority_unavailable",
+                "the resumed attempt could not obtain current Workspace authority",
+            );
+            return;
+        };
         let Ok(checkpoint) = serde_json::from_value(continuation.checkpoint) else {
+            retire_workspace_execution(workspace_access.as_deref()).await;
             fail_execution(
                 &app,
                 &plan,
@@ -772,6 +858,7 @@ fn spawn_approval_resume(
                     .approve(continuation.approval.call_id.clone(), approval_evidence_ref)
                     .is_err()
                 {
+                    retire_workspace_execution(workspace_access.as_deref()).await;
                     fail_execution(
                         &app,
                         &plan,
@@ -803,7 +890,7 @@ fn spawn_approval_resume(
                     input: plan.task.input.clone(),
                     lease,
                     connector_access,
-                    workspace_access,
+                    workspace_access: workspace_access.clone(),
                     attempt_id,
                     connector_context: connector_operation_context(&context),
                     approval_evidence: evidence,
@@ -814,16 +901,31 @@ fn spawn_approval_resume(
                 emit,
             )
             .await;
-        settle_execution(&app, &plan, &deferred, result);
+        settle_execution(&app, &plan, &deferred, result, workspace_access.as_deref()).await;
     });
 }
 
-fn settle_execution(
+async fn settle_execution(
     app: &Application,
     plan: &TaskExecutionPlan,
     deferred: &DeferredApprovalCapture,
     result: Result<UserModelRunOutcome, ExecutionError>,
+    workspace_access: Option<&AttemptWorkspaceAccess>,
 ) {
+    if let Some(access) = workspace_access {
+        access.stop_issuing();
+    }
+    if !matches!(&result, Ok(UserModelRunOutcome::AwaitingApproval { .. }))
+        && !retire_workspace_execution(workspace_access).await
+    {
+        fail_execution(
+            app,
+            plan,
+            "workspace_authority_close_unconfirmed",
+            "Workspace authority was drained after closure could not be confirmed",
+        );
+        return;
+    }
     match result {
         Ok(UserModelRunOutcome::Completed { output }) => {
             let _ = app.succeed_task(
@@ -841,6 +943,7 @@ fn settle_execution(
                     .map_err(|_| ())
             });
             let Ok((approval, checkpoint)) = suspended else {
+                retire_workspace_execution(workspace_access).await;
                 fail_execution(
                     app,
                     plan,
@@ -853,6 +956,7 @@ fn settle_execution(
                 .suspend_task_for_approval(&plan.task.tenant_id, plan, &approval, checkpoint)
                 .is_err()
             {
+                retire_workspace_execution(workspace_access).await;
                 fail_execution(
                     app,
                     plan,
