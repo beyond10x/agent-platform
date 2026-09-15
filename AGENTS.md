@@ -62,28 +62,57 @@ published to a registry.
 
 ## Pins
 
-**Three external pins are behind or are not pins at all (recorded 2026-09-15).** Currents read with
-`git ls-remote --tags` on that date; nothing here claims any of them is current.
+**Verified 2026-09-15** with `git ls-remote --tags` against each origin, in this checkout.
 
-| line | dependency | pinned | current | gap |
+| line | dependency | pinned | current | state |
 | --- | --- | --- | --- | --- |
-| `Cargo.toml:48` | `connectors-client` | `tag = "v0.5.6"` | `v0.11.0` | six minor versions |
-| `Cargo.toml:37-38` | `agentide-contracts`, `agentide-harness` | `tag = "0.2.1"` | `0.3.5` | one minor version |
+| `Cargo.toml:48` | `connectors-client` | `tag = "v0.7.2"` | `v0.11.0` | **head of the v1 line.** `v0.11.0` is a different lineage — see below |
+| `Cargo.toml:37-38` | `agentide-contracts`, `agentide-harness` | `tag = "0.3.5"` | `0.3.5` | current |
 | `Cargo.toml:39-40` | `workspace-client`, `workspace-core` | `branch = "main"` | latest tag `0.2.24`; `main` resolves to `2c25863` today | **not a pin** — the build is not reproducible |
 | `Cargo.toml:47` | `identity-client` | `tag = "0.5.6"` | `0.5.6` | current |
 | `Cargo.toml:44-46` | `harness-*` | `rev = "0f2edfef"` | — | exact by design, see `:42-43` |
 
-Advancing them is a **release-shaped change, not a manifest edit**: six minor versions of connectors
-and one of agentide are an API delta absorbed in this repository's source, and replacing the
-workspace branch pin changes what every consumer's build resolves. It is tracked as
-`story:dependency-pins-current` in `.engineering/planning/`. Do not bump these lines outside that
-story, and do not add a new `branch = ` dependency — a branch is a moving target, not a pin.
+### `connectors` is two lineages sharing one tag namespace
+
+`beyond10x/connectors` publishes two lineages under one set of tags: **`v0.2.0`–`v0.7.2` are v1**,
+and **`v0.8.0`–`v0.11.0` are v2**, a clean-room rewrite that took the repository identity. Its
+default branch `next` is v2's. Atlas ADR 0051, accepted 2026-09-15.
+
+So `v0.11.0` is **not "six minor versions ahead" of a v1 pin** — it is a different implementation of
+the component, and a diff of the version numbers says nothing about the work. Moving `:48` onto
+`v0.8.0` or later is a **lineage migration**: it replaces the `HostedClient`, `SubscriptionLease`,
+`RedeemedSubscription` and `operation` surface that `agent-platform-auth` is written against
+(`crates/agent-platform-auth/src/lib.rs:11-12,107-108,128,374-393,507`). That migration is the real
+remaining work and is tracked by `story:dependency-pins-current`. It is not a manifest edit and must
+not be attempted as one.
+
+`:48` is therefore held at `v0.7.2` **deliberately**, not through neglect. v1 will cut no further tag
+under this identity — `v0.8.0` is already published and belongs to v2 — so `v0.7.2` is the last v1
+pin that can ever exist.
+
+### Still open
+
+`workspace-*` is taken by branch, which is not a pin: `main` moves, so the build is not reproducible,
+and replacing it changes what every consumer's build resolves. Tracked by the same story. Do not add
+a new `branch = ` dependency.
+
+Two copies of `agentide-contracts` are linked today: `0.3.5` from `:37-38`, and `0.3.4` pulled in by
+`workspace-client` at `rev = "081761e3"` (`Cargo.lock`). Their types are distinct to the compiler.
+Retiring the `workspace-*` branch pin is what collapses them; until then, do not pass a contracts
+type between the two paths.
 
 ## AEP planning
 
 `.engineering/planning/` is changed only through `protocol artifact`. Before its first mutation in a
 session, run `protocol artifact list`; after a batch, run `protocol artifact validate --strict` and
 report its output. Do not hand-edit planning frontmatter or bodies.
+
+**Artifact ids are immutable, including their literals.** There is no verb that renames an id, and
+removing a file makes `validate --strict` report a deletion rather than a rename. One archived story
+therefore carries an adopter's name in its id and filename and will keep carrying it; its body says
+so and names its successor, `story:first-adopter-projection-adapter`, which holds the same Context
+and Acceptance under a generic id. Plan and cite the successor. Do not delete the archived file, and
+do not treat the literal in it as a defect to fix here.
 
 ## Gate
 

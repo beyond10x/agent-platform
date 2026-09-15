@@ -60,7 +60,7 @@ name = "agent-platform-auth"
 version = "0.6.8"
 dependencies = [
  "agent-platform-core",
- "agentide-contracts 0.2.1",
+ "agentide-contracts 0.3.5",
  "axum",
  "connectors-client",
  "identity-client",
@@ -104,7 +104,7 @@ dependencies = [
 name = "agent-platform-core"
 version = "0.6.8"
 dependencies = [
- "agentide-contracts 0.2.1",
+ "agentide-contracts 0.3.5",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -126,7 +126,7 @@ dependencies = [
  "agent-platform-auth",
  "agent-platform-connectors",
  "agent-platform-core",
- "agentide-contracts 0.2.1",
+ "agentide-contracts 0.3.5",
  "agentide-harness",
  "b10x-harness-loop",
  "b10x-harness-messages",
@@ -179,20 +179,6 @@ dependencies = [
 
 [[package]]
 name = "agentide-contracts"
-version = "0.2.1"
-source = "git+https://github.com/beyond10x/agentide.git?tag=0.2.1#c25e73330fc130895d8f1538c9746858a265186b"
-dependencies = [
- "chrono",
- "schemars 1.2.2",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2 0.11.0",
- "thiserror",
-]
-
-[[package]]
-name = "agentide-contracts"
 version = "0.3.4"
 source = "git+https://github.com/beyond10x/agentide.git?rev=081761e35d2b28f793500045e9d12cab70cb81f7#081761e35d2b28f793500045e9d12cab70cb81f7"
 dependencies = [
@@ -206,11 +192,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentide-core"
-version = "0.2.1"
-source = "git+https://github.com/beyond10x/agentide.git?tag=0.2.1#c25e73330fc130895d8f1538c9746858a265186b"
+name = "agentide-contracts"
+version = "0.3.5"
+source = "git+https://github.com/beyond10x/agentide.git?tag=0.3.5#6ae129950348344b4fc3ea54c44d0167038ff31e"
 dependencies = [
- "agentide-contracts 0.2.1",
+ "chrono",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "thiserror",
+]
+
+[[package]]
+name = "agentide-core"
+version = "0.3.5"
+source = "git+https://github.com/beyond10x/agentide.git?tag=0.3.5#6ae129950348344b4fc3ea54c44d0167038ff31e"
+dependencies = [
+ "agentide-contracts 0.3.5",
  "chrono",
  "serde",
  "serde_json",
@@ -221,10 +221,10 @@ dependencies = [
 
 [[package]]
 name = "agentide-harness"
-version = "0.2.1"
-source = "git+https://github.com/beyond10x/agentide.git?tag=0.2.1#c25e73330fc130895d8f1538c9746858a265186b"
+version = "0.3.5"
+source = "git+https://github.com/beyond10x/agentide.git?tag=0.3.5#6ae129950348344b4fc3ea54c44d0167038ff31e"
 dependencies = [
- "agentide-contracts 0.2.1",
+ "agentide-contracts 0.3.5",
  "agentide-core",
  "b10x-harness-credential",
  "b10x-harness-loop",
@@ -603,7 +603,7 @@ version = "0.11.1"
 source = "git+https://github.com/beyond10x/harness?rev=0f2edfef9f6dc3333b9377a730dfb40aeff14351#0f2edfef9f6dc3333b9377a730dfb40aeff14351"
 dependencies = [
  "b10x-harness-wire",
- "jsonschema",
+ "jsonschema 0.52.1",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -889,20 +889,21 @@ dependencies = [
 
 [[package]]
 name = "connector-state"
-version = "0.5.6"
-source = "git+https://github.com/beyond10x/connectors.git?tag=v0.5.6#e162cbf4fa45f5938545798fc667cea9f21de85f"
+version = "0.7.2"
+source = "git+https://github.com/beyond10x/connectors.git?tag=v0.7.2#c30e4f2475f6288b5e83c87ed09843882a882123"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "connectors-client"
-version = "0.5.6"
-source = "git+https://github.com/beyond10x/connectors.git?tag=v0.5.6#e162cbf4fa45f5938545798fc667cea9f21de85f"
+version = "0.7.2"
+source = "git+https://github.com/beyond10x/connectors.git?tag=v0.7.2#c30e4f2475f6288b5e83c87ed09843882a882123"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
  "identity-client",
+ "jsonschema 0.49.9",
  "keyring",
  "protocol",
  "reqwest 0.12.28",
@@ -1043,8 +1044,8 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.5.6"
-source = "git+https://github.com/beyond10x/connectors.git?tag=v0.5.6#e162cbf4fa45f5938545798fc667cea9f21de85f"
+version = "0.7.2"
+source = "git+https://github.com/beyond10x/connectors.git?tag=v0.7.2#c30e4f2475f6288b5e83c87ed09843882a882123"
 dependencies = [
  "async-trait",
  "connector-state",
@@ -1186,6 +1187,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fraction"
+version = "0.15.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
+dependencies = [
+ "lazy_static",
+ "num",
 ]
 
 [[package]]
@@ -1740,6 +1751,35 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
+version = "0.49.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59ec8a241beed129f06114aa68007e905ca350e7baeb6e17a7631bb7978d91b2"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "data-encoding",
+ "email_address",
+ "fancy-regex",
+ "fraction 0.15.4",
+ "getrandom 0.3.4",
+ "idna",
+ "itoa",
+ "jsonschema-regex 0.49.9",
+ "jsonschema-value 0.49.9",
+ "num-cmp",
+ "num-traits",
+ "percent-encoding",
+ "referencing 0.49.9",
+ "regex",
+ "serde",
+ "serde_json",
+ "strum",
+ "unicode-general-category",
+ "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema"
 version = "0.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93e842fa72fd1e50ca4676a527641c13f5ee0d423ac699bfe1cd2afa3a4fdbac"
@@ -1749,21 +1789,30 @@ dependencies = [
  "data-encoding",
  "email_address",
  "fancy-regex",
- "fraction",
+ "fraction 0.17.0",
  "getrandom 0.3.4",
  "itoa",
- "jsonschema-regex",
- "jsonschema-value",
+ "jsonschema-regex 0.52.1",
+ "jsonschema-value 0.52.1",
  "num-cmp",
  "num-traits",
  "percent-encoding",
- "referencing",
+ "referencing 0.52.1",
  "regex",
  "serde",
  "serde_json",
  "strum",
  "unicode-general-category",
  "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema-regex"
+version = "0.49.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91994f45017ed5e66aa8e59b8415f4cb033a6380d7200387b7cf117595fbdf85"
+dependencies = [
+ "regex-syntax",
 ]
 
 [[package]]
@@ -1777,13 +1826,27 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-value"
+version = "0.49.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ec7637f83e510868ae6ed625f7ebfbbde4554ee8ce49854caa5126a8b9b9ecb"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "fraction 0.15.4",
+ "num-cmp",
+ "num-traits",
+ "serde_json",
+]
+
+[[package]]
+name = "jsonschema-value"
 version = "0.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da4ab4cbe58181a117d8c3582844ce20b07184319b51ba6d756596c1c451aebc"
 dependencies = [
  "ahash",
  "bytecount",
- "fraction",
+ "fraction 0.17.0",
  "num-cmp",
  "num-traits",
  "serde_json",
@@ -1825,6 +1888,12 @@ checksum = "fb1e621458ca9c51aa110bd0339d4751a056b9576bf1253aee1aa560dda0fc9d"
 dependencies = [
  "log",
 ]
+
+[[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
@@ -2144,10 +2213,11 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.5.6"
-source = "git+https://github.com/beyond10x/connectors.git?tag=v0.5.6#e162cbf4fa45f5938545798fc667cea9f21de85f"
+version = "0.7.2"
+source = "git+https://github.com/beyond10x/connectors.git?tag=v0.7.2#c30e4f2475f6288b5e83c87ed09843882a882123"
 dependencies = [
  "domain",
+ "fluent-uri",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -2286,6 +2356,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.4",
+]
+
+[[package]]
+name = "referencing"
+version = "0.49.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6efa2154ea6f5ce0fdecdd2a8d18f2fa1a39a8fbba91564f555a592e4dce8278"
+dependencies = [
+ "ahash",
+ "fluent-uri",
+ "getrandom 0.3.4",
+ "hashbrown",
+ "itoa",
+ "micromap",
+ "parking_lot",
+ "percent-encoding",
+ "serde_json",
 ]
 
 [[package]]
