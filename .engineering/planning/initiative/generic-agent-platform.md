@@ -9,7 +9,7 @@ relations:
 - serves: vision:O1
 - serves: vision:O5
 - serves: vision:O6
-revision: 1
+revision: 2
 ---
 # Initiative: Generic agent platform service
 
@@ -23,7 +23,7 @@ Agent identities and immutable revisions, agent-specific capability mappings, as
 
 ## Success
 
-A first-party client can complete the governed walking slice through the generic API, and the babelforce ai-agent-platform can later project its product-specific definitions into this service without the service learning babelforce-specific concepts.
+A first-party client can complete the governed walking slice through the generic API, and a first adopter's ai-agent-platform can later project its product-specific definitions into this service without the service learning adopter-specific concepts.
 
 ## Not This
 

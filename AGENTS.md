@@ -19,7 +19,7 @@ evidence. Harness owns the agent loop. Connectors owns providers, integrations, 
 credentials, grants, operation descriptions, invocation and connector audit. Identity owns tenant
 and principal truth. Substrate owns confinement and llmgw owns production model routing.
 
-Babelforce's `ai-agent-platform` is a downstream product and future adopter. Its flows, knowledge,
+A first adopter's `ai-agent-platform` is a downstream product. Its flows, knowledge,
 voice, A2A channels, manager specialists, console, quotas and SDK facade do not enter this domain.
 
 ## Visibility

@@ -15,6 +15,6 @@ order and does not duplicate lifecycle state.
    describe/invoke, approval evidence, cancellation and outcome-unknown reconciliation.
 5. **Delivery.** Schedule dispatch, authenticated replay-resistant webhooks and Connector event
    triggers, all producing ordinary Tasks.
-6. **Product adoption.** A one-way adapter from babelforce `ai-agent-platform` committed definitions
+6. **Product adoption.** A one-way adapter from a first adopter's `ai-agent-platform` committed definitions
    to generic revisions, followed by shadow comparison and gradual text/effectful cutover. Voice and
    other product channels remain downstream until a generic session contract is deliberately added.
