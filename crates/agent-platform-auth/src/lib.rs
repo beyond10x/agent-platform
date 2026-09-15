@@ -314,8 +314,9 @@ impl AttemptWorkspaceAccess {
             .map_err(|_| {
                 AuthenticationError::new("the current Workspace actor view is unavailable")
             })?;
-        // Released service contracts cross as JSON. An upstream source revision is not the
-        // embedding crate's Rust type identity; a mismatched wire contract still fails closed.
+        // Where the two linked `agentide-contracts` copies meet (AGENTS.md, Pins). An upstream
+        // source revision is not this crate's type identity, so the released contract crosses as
+        // JSON; a mismatched wire contract still fails closed.
         serde_json::to_value(view)
             .and_then(serde_json::from_value)
             .map_err(|_| {

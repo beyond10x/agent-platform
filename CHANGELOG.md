@@ -4,6 +4,8 @@ All notable operator-visible changes to this private service are recorded here.
 
 ## [Unreleased]
 
+- Build Workspace from one exact upstream commit instead of whatever its default branch resolves to,
+  so two builds of the same source produce the same service.
 - Register coding attempts with Workspace through authenticated downward requests, checking current
   local task authority before each call. Retire every adapter clone on suspension and confirm
   closure, or drain issued proofs, before reporting a terminal attempt.

@@ -62,13 +62,13 @@ published to a registry.
 
 ## Pins
 
-**Verified 2026-09-15** with `git ls-remote --tags` against each origin, in this checkout.
+**Verified 2026-09-15** with `git ls-remote --tags --heads` against each origin, in this checkout.
 
 | line | dependency | pinned | current | state |
 | --- | --- | --- | --- | --- |
 | `Cargo.toml:48` | `connectors-client` | `tag = "v0.7.2"` | `v0.11.0` | **head of the v1 line.** `v0.11.0` is a different lineage — see below |
 | `Cargo.toml:37-38` | `agentide-contracts`, `agentide-harness` | `tag = "0.3.5"` | `0.3.5` | current |
-| `Cargo.toml:39-40` | `workspace-client`, `workspace-core` | `branch = "main"` | latest tag `0.2.24`; `main` resolves to `2c25863` today | **not a pin** — the build is not reproducible |
+| `Cargo.toml:39-40` | `workspace-client`, `workspace-core` | `rev = "2c25863"` | latest tag `0.2.24` = `e9de3e7`; `main` resolves to `5c47a43` today | exact by necessity — no published tag builds this repository, see below |
 | `Cargo.toml:47` | `identity-client` | `tag = "0.5.6"` | `0.5.6` | current |
 | `Cargo.toml:44-46` | `harness-*` | `rev = "0f2edfef"` | — | exact by design, see `:42-43` |
 
@@ -82,7 +82,7 @@ So `v0.11.0` is **not "six minor versions ahead" of a v1 pin** — it is a diffe
 the component, and a diff of the version numbers says nothing about the work. Moving `:48` onto
 `v0.8.0` or later is a **lineage migration**: it replaces the `HostedClient`, `SubscriptionLease`,
 `RedeemedSubscription` and `operation` surface that `agent-platform-auth` is written against
-(`crates/agent-platform-auth/src/lib.rs:11-12,107-108,128,374-393,507`). That migration is the real
+(`crates/agent-platform-auth/src/lib.rs:11-12,107-108,128,375-394,508`). That migration is the real
 remaining work and is tracked by `story:dependency-pins-current`. It is not a manifest edit and must
 not be attempted as one.
 
@@ -90,16 +90,49 @@ not be attempted as one.
 under this identity — `v0.8.0` is already published and belongs to v2 — so `v0.7.2` is the last v1
 pin that can ever exist.
 
-### Still open
+### `workspace-*` is pinned by rev because no tag builds this repository
 
-`workspace-*` is taken by branch, which is not a pin: `main` moves, so the build is not reproducible,
-and replacing it changes what every consumer's build resolves. Tracked by the same story. Do not add
-a new `branch = ` dependency.
+`:39-40` took `branch = "main"`, which is not a pin: two builds a day apart could differ with no
+commit here to show it. They now take the exact commit `2c25863`.
 
-Two copies of `agentide-contracts` are linked today: `0.3.5` from `:37-38`, and `0.3.4` pulled in by
-`workspace-client` at `rev = "081761e3"` (`Cargo.lock`). Their types are distinct to the compiler.
-Retiring the `workspace-*` branch pin is what collapses them; until then, do not pass a contracts
-type between the two paths.
+A tag was preferred and is not available. The newest `workspace` tag is `0.2.24` (`e9de3e7`), and
+`2c25863` is five commits ahead of it. Those five commits **add**
+`crates/workspace-client/src/attestation.rs` upstream, and `crates/agent-platform-auth/src/lib.rs:16,32`
+is written against `workspace_client::attestation::{HostRole, RequestSigner, PROOF_TTL_SECONDS}`.
+Pinning `0.2.24` would therefore not compile. Upstream must cut a tag at or after `2c25863` before
+`:39-40` can be a tag pin.
+
+`2c25863` is what `branch = "main"` already resolved to, so no dependency moved — the only
+`Cargo.lock` change is the source string (`Cargo.lock:3719,3738`). It is reachable from an
+advertised remote ref and cannot be garbage-collected: upstream `main` (`5c47a43`) is exactly one
+docs-only commit ahead of it, so it is an ancestor of the default branch. Do not add a new
+`branch = ` dependency.
+
+### Two `agentide-contracts` are linked, and cannot be collapsed from here
+
+`Cargo.lock:180-192` links `0.3.4` through `workspace-client`'s `rev = "081761e3"`, and
+`Cargo.lock:194-206` links `0.3.5` from `:37-38`. They are distinct types to the compiler.
+
+Retiring the branch pin did not collapse them and could not have. `workspace` declares
+`agentide-contracts = { rev = "081761e3", version = "=0.3.4" }` at **every** advertised ref — tag
+`0.2.24`, the pinned `2c25863`, and `main` — so no `workspace-*` revision exists that takes `0.3.5`.
+The choice is upstream's to make.
+
+It does not bite today, and the boundary is one function wide. `workspace-client` names a contracts
+type in exactly one place in its public surface: `coding_actor_view`, returning
+`agentide_contracts::ActorView` (upstream `crates/workspace-client/src/lib.rs:283`). Its only caller
+is `crates/agent-platform-auth/src/lib.rs:297-325`, which re-encodes the value through `serde_json`
+instead of passing the type across, so the two graphs never meet in a signature. Nothing else can
+see both: `agent-platform-auth` is the only member that depends on `workspace-client`
+(`crates/agent-platform-auth/Cargo.toml:18`), and `workspace-core` has no contracts dependency at
+all (`Cargo.lock:3736-3742`).
+
+The re-encode is lossless because the two revisions carry the same crate source: `diff -rq` over
+`crates/agentide-contracts` between `081761e3` and the `0.3.5` tag `6ae1299` reports no difference —
+`0.3.5` bumped only the version inherited from that workspace's root manifest. Should a later
+upstream revision change the contract, the conversion fails closed at
+`crates/agent-platform-auth/src/lib.rs:323` rather than mis-typing a value. Still do not pass a
+contracts type between the two paths in a signature.
 
 ## AEP planning
 

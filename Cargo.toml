@@ -36,8 +36,8 @@ agent-platform-http = { path = "crates/agent-platform-http" }
 agent-platform-client = { path = "crates/agent-platform-client" }
 agentide-contracts = { git = "https://github.com/beyond10x/agentide.git", tag = "0.3.5" }
 agentide-harness = { git = "https://github.com/beyond10x/agentide.git", tag = "0.3.5" }
-workspace-client = { git = "https://github.com/beyond10x/workspace.git", branch = "main" }
-workspace-core = { git = "https://github.com/beyond10x/workspace.git", branch = "main" }
+workspace-client = { git = "https://github.com/beyond10x/workspace.git", rev = "2c25863658a648862231b61b25c9db48ef02b91d" }
+workspace-core = { git = "https://github.com/beyond10x/workspace.git", rev = "2c25863658a648862231b61b25c9db48ef02b91d" }
 
 # Harness owns the neutral tool vocabulary consumed by the projection compiler. One exact release
 # keeps this service from reinterpreting that boundary crate by crate.
