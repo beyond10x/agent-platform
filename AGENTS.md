@@ -60,6 +60,25 @@ published to a registry.
 14. `/docs/` and `/openapi.json` are public, curated service metadata embedded in the binary. Their
     Rust-only build never projects planning records, tenant data, credentials or deployment config.
 
+## Pins
+
+**Three external pins are behind or are not pins at all (recorded 2026-09-15).** Currents read with
+`git ls-remote --tags` on that date; nothing here claims any of them is current.
+
+| line | dependency | pinned | current | gap |
+| --- | --- | --- | --- | --- |
+| `Cargo.toml:48` | `connectors-client` | `tag = "v0.5.6"` | `v0.11.0` | six minor versions |
+| `Cargo.toml:37-38` | `agentide-contracts`, `agentide-harness` | `tag = "0.2.1"` | `0.3.5` | one minor version |
+| `Cargo.toml:39-40` | `workspace-client`, `workspace-core` | `branch = "main"` | latest tag `0.2.24`; `main` resolves to `2c25863` today | **not a pin** — the build is not reproducible |
+| `Cargo.toml:47` | `identity-client` | `tag = "0.5.6"` | `0.5.6` | current |
+| `Cargo.toml:44-46` | `harness-*` | `rev = "0f2edfef"` | — | exact by design, see `:42-43` |
+
+Advancing them is a **release-shaped change, not a manifest edit**: six minor versions of connectors
+and one of agentide are an API delta absorbed in this repository's source, and replacing the
+workspace branch pin changes what every consumer's build resolves. It is tracked as
+`story:dependency-pins-current` in `.engineering/planning/`. Do not bump these lines outside that
+story, and do not add a new `branch = ` dependency — a branch is a moving target, not a pin.
+
 ## AEP planning
 
 `.engineering/planning/` is changed only through `protocol artifact`. Before its first mutation in a
