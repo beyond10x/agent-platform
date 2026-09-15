@@ -1,0 +1,81 @@
+# The gate for this repository: the three commands AGENTS.md § Gate names, on a clean machine.
+#
+# Every git dependency resolves to a public repository, so no credential is needed — but some are
+# written `ssh://git@github.com/...`, which a runner has no key for. The rewrite makes cargo fetch
+# them over anonymous HTTPS without editing the manifest, and the step before it proves each one is
+# reachable that way rather than discovering it part-way through a build.
+name: Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  GIT_TERMINAL_PROMPT: '0'
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Every git dependency is reachable without a credential
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          repos="$(grep -ohE 'github\.com[:/][A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
+                     Cargo.toml crates/*/Cargo.toml 2>/dev/null \
+                   | sed -E 's|.*github\.com[:/]||; s|\.git$||' | sort -u \
+                   | grep -v '^beyond10x/agent-platform$')"
+          [ -n "$repos" ] || { echo "::error::found no git dependency to check" >&2; exit 1; }
+          fail=0
+          for repo in $repos; do
+            if GIT_ASKPASS=/bin/false git -c credential.helper= \
+                 ls-remote "https://github.com/${repo}.git" HEAD >/dev/null 2>&1; then
+              echo "reachable: ${repo}"
+            else
+              echo "::error::${repo} is not reachable without a credential; this gate cannot run" >&2
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.97'
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test --workspace --locked
+        run: cargo test --workspace --locked
+
+      - name: The gate wrote nothing
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the gate left the tree dirty" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
