@@ -42,9 +42,6 @@ surfaces:
     label: Runs agent model and tool loops through Harness
     target: harness/docs
   - kind: uses
-    label: Projects governed Connector operations
-    target: connectors/docs
-  - kind: uses
     label: Resolves tenant and principal authority
     target: identity/docs
   routeBase: /docs/agent-platform/
